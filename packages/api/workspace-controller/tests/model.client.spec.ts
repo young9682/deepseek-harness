@@ -17,6 +17,8 @@ import type {
   WorkspacePinValue,
   WorkspaceRenameRequest,
   WorkspaceUnarchiveSessionRequest,
+  WorkspaceSessionActivityRequest,
+  WorkspaceSessionActivityValue,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
   WorkspaceId,
@@ -102,6 +104,10 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     _request: WorkspaceUnpinSessionRequest,
   ) => Promise<RemoteResult<WorkspacePinValue>> = () =>
     Promise.resolve(remoteOk({ pinnedSessionIds: [] }))
+  onSessionActivity: (
+    request: WorkspaceSessionActivityRequest,
+  ) => Promise<RemoteResult<WorkspaceSessionActivityValue>> = request =>
+    Promise.resolve(remoteOk({ sessionId: request.sessionId, activity: [] }))
 
   create(request: WorkspaceCreateRequest): Promise<RemoteResult<WorkspaceCreateValue>> {
     this.record('create', request)
@@ -146,6 +152,13 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   unpinSession(request: WorkspaceUnpinSessionRequest): Promise<RemoteResult<WorkspacePinValue>> {
     this.record('unpinSession', request)
     return this.onUnpinSession(request)
+  }
+
+  sessionActivity(
+    request: WorkspaceSessionActivityRequest,
+  ): Promise<RemoteResult<WorkspaceSessionActivityValue>> {
+    this.record('sessionActivity', request)
+    return this.onSessionActivity(request)
   }
 
   follow(_signal?: AbortSignal): RemoteStreamHandle<WorkspaceFollowFrame, never> {

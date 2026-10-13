@@ -81,6 +81,20 @@ export class SessionCreateError extends Error {
   }
 }
 
+/**
+ * Structured session-delete failure. `rpcError.code` distinguishes the
+ * running-work refusal (`session/active`, whose details name what is running)
+ * from the archived refusal (`session/archived`) and a missing session.
+ */
+export class SessionDeleteError extends Error {
+  override readonly name = 'SessionDeleteError'
+
+  /** @param rpcError - Host business or folded transport error. */
+  constructor(readonly rpcError: RemoteFailure) {
+    super(`session delete failed: ${rpcError.code}: ${rpcError.message}`)
+  }
+}
+
 /** Structured session-fork failure. */
 export class SessionForkError extends Error {
   override readonly name = 'SessionForkError'
@@ -436,6 +450,20 @@ export class ClientSessions implements ISessions {
     if (!result.ok) throw new SessionCreateError(result.error, opts.sessionId)
     this.projectList()
     return result.value.sessionId
+  }
+
+  /**
+   * Permanently delete a Host Session and its stored log. The row leaves the
+   * published list before this resolves.
+   * @param sessionId - Session to delete.
+   * @param options - `stopActivity` asks the Host to stop the Session's
+   *   running work instead of refusing as `session/active`.
+   * @throws {SessionDeleteError} carrying the Host refusal code.
+   */
+  async delete(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
+    const result = await this.manager.delete(sessionId, options)
+    if (!result.ok) throw new SessionDeleteError(result.error)
+    this.projectList()
   }
 
   /**

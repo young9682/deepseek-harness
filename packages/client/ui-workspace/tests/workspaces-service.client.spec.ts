@@ -8,7 +8,7 @@ import type {
 import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type {
-  IWorkspaces, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
+  IWorkspaces, SessionActivity, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { ClientRemote, DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
@@ -159,6 +159,13 @@ class FakeSessions implements ISessions {
   readonly binding = vi.fn<ISessions['binding']>(sessionId =>
     this.retained.findLast(item => item.reference.sessionId === sessionId
       && item.release.mock.calls.length === 0)?.reference.binding)
+  /** Deletion calls, newest last; replace the property to make it fail. */
+  readonly deleteCalls: Array<[SessionId, { readonly stopActivity?: boolean }]> = []
+  delete: ISessions['delete'] = (sessionId, options = {}) => {
+    this.deleteCalls.push([sessionId, options])
+    return Promise.resolve()
+  }
+
   declare readonly using: ISessions['using']
   declare readonly retainInfo: ISessions['retainInfo']
   declare readonly searchResultLimit: ISessions['searchResultLimit']
@@ -233,6 +240,10 @@ class FakeWorkspaces implements IWorkspaces {
       ...state,
       pinnedSessionIds: state.pinnedSessionIds.filter(id => id !== sessionId),
     }))
+  }
+
+  async sessionActivity(): Promise<readonly SessionActivity[]> {
+    return []
   }
 }
 
@@ -1308,6 +1319,25 @@ describe('UiWorkspaceService', () => {
     b.workspaces.onArchive = () => Promise.reject(new Error('archive rejected'))
     await expect(b.uiWorkspace.archiveSession(idle)).rejects.toThrow('archive rejected')
     expect(b.workspaces.archiveCalls).toEqual([idle, idle])
+  })
+
+  it('deletes through the Session service and returns the main view to its Workspace', async () => {
+    const b = bench()
+    b.uiWorkspace.openSession(sid('current'))
+
+    await b.uiWorkspace.deleteSession(sid('current'), { stopActivity: true })
+    expect(b.sessions.deleteCalls).toEqual([[sid('current'), { stopActivity: true }]])
+    // The removed conversation cannot stay selected: its row is gone.
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+
+    // A Session that is not the main selection leaves the selection alone.
+    b.uiWorkspace.openSession(sid('current'))
+    await b.uiWorkspace.deleteSession(sid('idle'))
+    expect(b.sessions.deleteCalls).toHaveLength(2)
+    expect(b.sessions.retained[1]!.release).not.toHaveBeenCalled()
+
+    b.sessions.delete = () => Promise.reject(new Error('delete rejected'))
+    await expect(b.uiWorkspace.deleteSession(sid('idle'))).rejects.toThrow('delete rejected')
   })
 
   it('forwards unarchive commands and preserves failures', async () => {

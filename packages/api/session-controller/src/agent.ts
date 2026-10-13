@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type {
-  Agent, AgentOptions, AgentSetup, ModelSelection as AgentModelSelection, ModelSelectionRef,
+  Agent, AgentHandle, AgentOptions, AgentSetup, ModelSelection as AgentModelSelection, ModelSelectionRef,
 } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
@@ -142,6 +142,13 @@ export class ApiSessionAgentController {
   private readonly creations = new Map<SessionId, Promise<Agent>>()
   private readonly selections = new WeakMap<Agent, InstalledSelection>()
   private readonly imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
+  /**
+   * The teardown capabilities for the Agents this controller created or
+   * resumed, keyed by session id. {@link AgentHandle} is a capability: among
+   * consumers only the holder can tear an Agent down, so retaining it here is
+   * what lets a Session be closed before its stored log is removed.
+   */
+  private readonly handles = new Map<SessionId, AgentHandle>()
 
   /** @param ctx - Host context carrying Agent, model, persistence, and Typert services. */
   constructor(private readonly ctx: Context) {
@@ -434,11 +441,11 @@ export class ApiSessionAgentController {
     if (published !== undefined && hasApiSessionSubagentOwner(this.ctx, published, live)) {
       throw new ApiSessionSubagentOwnership(sessionId)
     }
-    return (await this.ctx.agents.resume({
+    return this.retainHandle(await this.ctx.agents.resume({
       resumeSessionId: sessionId,
       agentOptions: this.agentOptions(),
       setup: composition.setup,
-    })).agent
+    }))
   }
 
   private async createOrAdopt(
@@ -466,11 +473,11 @@ export class ApiSessionAgentController {
         const storedPreset = this.presetForObservation(observation)
         this.assertPresetUnchanged(sessionId, presetId, storedPreset)
         const composition = await this.composeAgent(storedPreset)
-        return (await this.ctx.agents.resume({
+        return this.retainHandle(await this.ctx.agents.resume({
           resumeSessionId: sessionId,
           agentOptions: this.agentOptions(),
           setup: composition.setup,
-        })).agent
+        }))
       } catch (error: unknown) {
         if (!(error instanceof SessionQueryError)
           || error.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error
@@ -483,7 +490,7 @@ export class ApiSessionAgentController {
       throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
     }
     const composition = await this.composeAgent(presetId)
-    return (await this.ctx.agents.create({
+    return this.retainHandle(await this.ctx.agents.create({
       sessionId,
       agentOptions: this.agentOptions(),
       meta: {
@@ -491,7 +498,47 @@ export class ApiSessionAgentController {
         ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
       },
       setup: composition.setup,
-    })).agent
+    }))
+  }
+
+  /**
+   * Remember one Agent's teardown capability and hand back its Agent.
+   * @param handle - the owned handle returned by the Agent registry.
+   * @returns the handle's Agent, for call-site chaining.
+   */
+  private retainHandle(handle: AgentHandle): Agent {
+    this.handles.set(handle.agent.id, handle)
+    return handle.agent
+  }
+
+  /**
+   * Drop a retained teardown capability for an Agent that is already gone, so
+   * a long-lived process never accumulates dead handles. Safe to call for an
+   * id this controller never retained.
+   * @param sessionId - the Agent identity whose handle is dropped.
+   */
+  forgetHandle(sessionId: SessionId): void {
+    this.handles.delete(sessionId)
+  }
+
+  /**
+   * Tear down the live Agent for one session, if this controller owns it.
+   *
+   * Disposing the retained handle stops the loop, awaits its exit, unregisters
+   * the Agent, removes its Session from the store, and unwinds its scope — the
+   * only path that makes a session non-live, and therefore the precondition
+   * for removing its stored log.
+   * @param sessionId - the session whose live Agent is torn down.
+   * @returns whether a retained handle was disposed. `false` means this
+   *   controller holds no teardown capability for the id — either nothing is
+   *   live, or the Agent belongs to another owner that must tear it down.
+   */
+  async disposeLive(sessionId: SessionId): Promise<boolean> {
+    const handle = this.handles.get(sessionId)
+    if (handle === undefined) return false
+    this.handles.delete(sessionId)
+    await handle.dispose()
+    return true
   }
 
   private agentOptions(): AgentOptions {

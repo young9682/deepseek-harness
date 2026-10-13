@@ -54,6 +54,17 @@ export function RowActionToast({ useToast, useStore, dismissToast, undoArchive, 
       />
     )
   }
+  if (toast.kind === 'deleted') {
+    // No recovery action: the Session and its stored log are gone.
+    return (
+      <Toast
+        key={`toast-${String(toast.seq)}`}
+        text={t('toast.deleted')}
+        tone="success"
+        onDone={dismissToast}
+      />
+    )
+  }
   if (toast.kind === 'createFailed') {
     return (
       <Toast
@@ -77,7 +88,7 @@ export function RowActionToast({ useToast, useStore, dismissToast, undoArchive, 
 
 /** The copy of one plain warning, keyed by the notice kind the union closes over. */
 function plainNoticeText(
-  toast: Exclude<RowToastState, { kind: 'archived' | 'stoppedAndArchived' | 'createFailed' | 'forkRequiresOpen' }>,
+  toast: Exclude<RowToastState, { kind: 'archived' | 'stoppedAndArchived' | 'createFailed' | 'forkRequiresOpen' | 'deleted' }>,
   t: RowToastProps['t'],
 ): string {
   switch (toast.kind) {
@@ -85,6 +96,7 @@ function plainNoticeText(
     case 'unpinFailed': return t('toast.unpinFailed')
     case 'defaultWorkspaceFailed': return t('defaultWorkspace.failed')
     case 'archivedNotOpenable': return t('toast.archivedNotOpenable')
+    case 'archivedNotDeletable': return t('toast.archivedNotDeletable')
     /* v8 ignore next 2 -- closed-union backstop; only reached if a notice kind is forged */
     default:
       return assertNever(toast)

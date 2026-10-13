@@ -26,7 +26,7 @@
  * row of a Session's "..." menu is an entry of
  * `sidebar.workspaces.session.menu.item`, and every hover button at the row's
  * end is an entry of `sidebar.workspaces.session.row.action`. The shipped
- * actions — pin, rename, fork, archive — are ordinary entries this package
+ * actions — pin, rename, fork, archive, delete — are ordinary entries this package
  * registers from `apply`, each carrying its own behavior in its own inject
  * face and reading its own Host state through hooks that face injects, so a
  * client plugin's action lands beside them by `order` and needs nothing from
@@ -136,7 +136,8 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
     /**
      * The rows of one Session's "..." menu, in ascending `order`. ui-workspace
      * registers the shipped rows here — `pin` (100), `rename` (200), `fork`
-     * (300), `archive` (400) — so a plugin row is placed by its own `order`
+     * (300), `archive` (400), `delete` (500, separated as the destructive one)
+     * — so a plugin row is placed by its own `order`
      * among them. Use a package-namespaced `id`; reusing a shipped id at
      * another `priority` shadows that row. Each entry renders one
      * `role="menuitem"` `<button>` (the shipped rows use ui-primitives'
@@ -294,6 +295,8 @@ export type RowToast =
   | { kind: 'pinFailed' }
   | { kind: 'unpinFailed' }
   | { kind: 'archivedNotOpenable' }
+  | { kind: 'archivedNotDeletable' }
+  | { kind: 'deleted' }
   | { kind: 'defaultWorkspaceFailed' }
   | { kind: 'forkRequiresOpen'; sessionId: SessionId }
   /**
@@ -380,6 +383,55 @@ export interface SessionArchiveConfirmInjected {
   stopAndArchiveSession: (sessionId: SessionId) => Promise<void>
 }
 
+/**
+ * Delete action share (row menu only; deletion is irreversible, so it never
+ * gets a hover button). The callbacks carry the whole behavior: the archived
+ * guard that diverts to a notice instead of a dialog, the confirmation the
+ * dialog opens on, the Host call, and the diagnostics for a rejection.
+ */
+export interface DeleteSessionInjected {
+  /**
+   * Ask for the permanent-deletion confirmation for one row. An archived row
+   * never opens the dialog — deletion is irreversible, so the recoverable
+   * archived state must be left first, and the injected behavior raises the
+   * notice that says so instead.
+   */
+  requestDeleteSession: (sessionId: SessionId, displayTitle: string) => void
+}
+
+/**
+ * A permanent-deletion confirmation the delete action asked for. The dialog
+ * states the irreversibility in every case and lists whatever the Session is
+ * running, because confirming stops that work before removing the Session.
+ */
+export interface SessionDeleteConfirmRequest {
+  /** Session to delete. */
+  sessionId: SessionId
+  /** The row's display title, named in the dialog. */
+  displayTitle: string
+}
+
+/**
+ * Delete confirmation dialog share: the pending confirmation, its settlement,
+ * the activity read the dialog opens with, and the delete hop it confirms with.
+ */
+export interface SessionDeleteConfirmInjected {
+  hooks: {
+    /** The confirmation asked for, until the dialog consumes or cancels it. */
+    deleteRequest: HostObservable<SessionDeleteConfirmRequest | null>
+  }
+  /** Consume or cancel the pending confirmation. */
+  settleSessionDelete: () => void
+  /** What this Session is running right now, in family order; empty when idle. */
+  loadSessionActivity: (sessionId: SessionId) => Promise<readonly SessionActivity[]>
+  /**
+   * Delete a Session, asking the Host to stop its running work first when
+   * `stopActivity` is set; resolves once the Session and its stored log are
+   * gone. The dialog's caller raises the notice.
+   */
+  confirmSessionDelete: (sessionId: SessionId, options: { readonly stopActivity: boolean }) => Promise<void>
+}
+
 /** Fork action share. */
 export interface ForkSessionInjected {
   /** Fork a Session at its last completed turn; the child arrives through the Host list. */
@@ -441,6 +493,13 @@ export type SessionArchiveConfirmProps =
   & PropsLocale<'workspace'>
   & Omit<SessionArchiveConfirmInjected, 'hooks'>
   & PropsHooks<SessionArchiveConfirmInjected['hooks']>
+
+/** Props of the delete-confirmation dialog entry in `shell.overlay`. */
+export type SessionDeleteConfirmProps =
+  PropsRuntime<'shell.overlay'>
+  & PropsLocale<'workspace'>
+  & Omit<SessionDeleteConfirmInjected, 'hooks'>
+  & PropsHooks<SessionDeleteConfirmInjected['hooks']>
 
 /**
  * Props of the row toast entry in `shell.overlay`. The declared viewing store

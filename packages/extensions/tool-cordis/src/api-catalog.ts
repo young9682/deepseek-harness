@@ -1981,6 +1981,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the Session identity and resolved preset when configured.',
       },
       {
+        signature: '@Remote(\'delete\') delete(request: SessionDeleteRequest): Promise<SessionDeleteValue>',
+        description: 'Permanently delete one ordinary Session and its stored log.',
+        parameters: [{ name: 'request', description: 'Session identity and whether to stop its running work.' }],
+        returns: 'deletion acknowledgement.',
+      },
+      {
         signature: '@Remote(\'selectModel\') selectModel(request: SessionSelectModelRequest): Promise<SessionSelectModelValue>',
         description: 'Select one Session-local model after explicitly resuming the Session; save the default in the background.',
         parameters: [{ name: 'request', description: 'Session identity and requested model selection.' }],
@@ -2155,6 +2161,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [{ name: 'options', description: 'optional cancellation.' }],
         returns: 'one snapshot per stored session.',
       },
+      {
+        signature: 'abstract delete(id: SessionId, options?: SessionPersistenceDeleteOptions): Promise<void>',
+        description: 'Permanently remove every artifact this backend owns for one session: the complete stored log (all retained generations) and the session\'s own bookkeeping beside it. Content-addressed artifacts shared with other sessions — attachments above all — are never touched.\n\nIdempotent: a session this backend cannot see resolves, because removal\'s postcondition already holds. A `session/disposed` writer whose close is still draining is awaited rather than refused.\n\nRefuses with SessionPersistenceActiveError while this instance holds an OPEN write handle for the id: the live write path would recreate the log after removal. Close the handle (or dispose the session) first.\n\nOnce `delete` resolves, `stat`, `list`, and `open` observe no trace of the id — on this instance and on a later one over the same storage.',
+        parameters: [{ name: 'id', description: 'the stored session to remove.' }, { name: 'options', description: 'optional cancellation.' }],
+        throws: ['{SessionPersistenceActiveError} when this instance still owns an open write handle for the session.'],
+      },
     ],
   },
   {
@@ -2173,6 +2185,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Read only a predecessor checkpoint\'s title as a zero-I/O listing hint.\n\nThe authoritative Session header supplies the lifecycle identity. A cache checkpoint can lag that log but cannot lead it because writes flush the log first, so a matching predecessor title is a genuine (possibly stale) fact from this Session. The registry still requires the current title projection\'s row version and schema. No other predecessor projection is exposed: format normalization can change their current meaning, and the cachedSnapshot / hydration paths continue to reject them.',
         parameters: [{ name: 'meta', description: 'authoritative listed Session header.' }],
         returns: 'a title-only block at the stored title row\'s watermark, or `undefined` when the record is current, newer, unrelated, missing, or incompatible with the title unit.',
+      },
+      {
+        signature: 'delete(id: SessionId): Promise<boolean>',
+        description: 'Drop one session\'s checkpoint row because the session itself is gone.\n\nThe checkpoint stores derived data, so losing a write costs only a longer tail replay on the next cold read. A failed REMOVAL is different: nothing later rewrites the row for an absent session, so a swallowed failure would leave the artifact behind forever — exactly what the caller is trying to reclaim. This operation therefore rejects instead of logging, and the caller reports the partial removal.',
+        parameters: [{ name: 'id', description: 'the removed session whose checkpoint is dropped.' }],
+        returns: '`true` when a record was removed, `false` when none existed.',
       },
       {
         signature: 'hydratePrepared( session: Session, events: readonly SessionEvent[], ): ProjectionSnapshot',
@@ -3728,6 +3746,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the complete resulting archive set.',
       },
       {
+        signature: '@Remote(\'sessionActivity\') sessionActivity(request: WorkspaceSessionActivityRequest): Promise<WorkspaceSessionActivityValue>',
+        description: 'Report the work a Session is running right now, without stopping any of it, so a destructive confirmation can list what it would have to stop.',
+        parameters: [{ name: 'request', description: 'Session identity to inspect.' }],
+        returns: 'one entry per activity family; empty when the Session is idle.',
+      },
+      {
         signature: '@Remote(\'unarchiveSession\') unarchiveSession(request: WorkspaceUnarchiveSessionRequest): Promise<WorkspaceArchiveValue>',
         description: 'Restore one archived Session to Workspace grouping surfaces.',
         parameters: [{ name: 'request', description: 'Session identity to unarchive.' }],
@@ -3833,6 +3857,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'the complete committed workspace order.',
       },
       {
+        signature: 'isArchived(sessionId: SessionId): boolean',
+        description: 'Whether the durable archive set currently holds this session. Callers that must branch on archival state — a deletion that archived rows refuse, for instance — ask here rather than reading archivedSessionIds, so the archive set keeps one home.',
+        parameters: [{ name: 'sessionId', description: 'The session to test.' }],
+        returns: 'true while the session is archived.',
+      },
+      {
         signature: 'archiveSession(sessionId: SessionId, options: ArchiveSessionOptions = {}): Promise<void>',
         description: 'Archive one session durably. The session must exist (live or in session persistence); its workspace accounting — or lack of one — is irrelevant. Without `stopActivity` the session must also be inactive: the `workspace/session-activity` waterfall is asked once, and any reported activity rejects with WorkspaceActiveSessionError before anything is written. With `stopActivity` the archive is written without an activity check, and the `workspace/session-stop` providers are then asked to stop the session\'s work: the durable archive set is what a provider\'s `agent/pre-step` gate reads, so every wake the stops induce is already blocked. Archiving drops the session\'s pin in the same durable write (pinning and archival are mutually exclusive). An already archived id resolves without writing, asking, or stopping.',
         parameters: [{ name: 'sessionId', description: 'The session to archive.' }, { name: 'options', description: 'Whether running work is stopped instead of refusing.' }],
@@ -3842,6 +3872,18 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         signature: 'unarchiveSession(sessionId: SessionId): Promise<void>',
         description: 'Unarchive one session durably by dropping it from the registry-global archive set; the accounting slot was never touched, so the session returns to its recorded position. Unarchiving runs no session-existence check because removing an id cannot introduce an unknown one, so an entry whose session is gone still resolves. An id that is not archived resolves without writing.',
         parameters: [{ name: 'sessionId', description: 'The session to unarchive.' }],
+        returns: 'resolution after durability.',
+      },
+      {
+        signature: 'sessionActivity(sessionId: SessionId): Promise<readonly SessionActivity[]>',
+        description: 'Ask every provider what work a session is running right now, without stopping any of it. This is the same `workspace/session-activity` waterfall archiveSession\'s admission check reads; it is exposed so a caller can list the work a destructive operation would have to stop before the user commits to it.',
+        parameters: [{ name: 'sessionId', description: 'The session to inspect.' }],
+        returns: 'one entry per reported activity family, in provider order; empty when the session is idle.',
+      },
+      {
+        signature: 'forgetSession(sessionId: SessionId): Promise<void>',
+        description: 'Drop every registry reference to one session whose stored log the caller has already removed: its archive entry, its pin, its accounting slot in every workspace, and the header this registry answers `sessionKnown` and membership from.\n\nRuns no session-existence check: removing an id cannot introduce an unknown one, so an id this registry never saw resolves without writing. Idempotent — a second call finds nothing to change.',
+        parameters: [{ name: 'sessionId', description: 'The removed session to forget.' }],
         returns: 'resolution after durability.',
       },
       {
@@ -6778,6 +6820,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionCreateValue {\n    readonly sessionId: SessionId;\n    readonly agentPreset?: string;\n}',
   },
   {
+    name: 'SessionDeleteRequest',
+    declaration: 'export interface SessionDeleteRequest {\n    readonly sessionId: SessionId;\n    readonly stopActivity?: boolean;\n}',
+  },
+  {
+    name: 'SessionDeleteValue',
+    declaration: 'export interface SessionDeleteValue {\n    readonly deleted: true;\n}',
+  },
+  {
     name: 'SessionEndInput',
     declaration: 'export interface SessionEndInput {\n    reason: \'clear\' | \'logout\' | \'prompt_input_exit\' | \'resume\' | \'other\';\n    sessionId: string;\n}',
   },
@@ -7004,6 +7054,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionPersistenceCreateOptions',
     declaration: 'export interface SessionPersistenceCreateOptions {\n    readonly signal?: AbortSignal;\n    readonly inheritedEventCount?: SessionLogOffset;\n}',
+  },
+  {
+    name: 'SessionPersistenceDeleteOptions',
+    declaration: 'export interface SessionPersistenceDeleteOptions {\n    readonly signal?: AbortSignal;\n}',
   },
   {
     name: 'SessionPersistenceListOptions',
@@ -8528,6 +8582,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'WorkspaceRenameRequest',
     declaration: 'export interface WorkspaceRenameRequest {\n    readonly workspaceId: WorkspaceId;\n    readonly title: string;\n}',
+  },
+  {
+    name: 'WorkspaceSessionActivityRequest',
+    declaration: 'export interface WorkspaceSessionActivityRequest {\n    readonly sessionId: SessionId;\n}',
+  },
+  {
+    name: 'WorkspaceSessionActivityValue',
+    declaration: 'export interface WorkspaceSessionActivityValue {\n    readonly sessionId: SessionId;\n    readonly activity: readonly SessionActivity[];\n}',
   },
   {
     name: 'WorkspaceUnarchiveSessionRequest',

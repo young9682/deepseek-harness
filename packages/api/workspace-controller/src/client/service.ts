@@ -3,7 +3,7 @@
 import { Service, type Context } from '@deepseek-ai/cordis'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RemoteFailure } from '@deepseek-ai/dsh-typert-protocol'
-import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
+import type { SessionActivity, WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import type { WorkspaceView } from '../types.ts'
 import type { ClientWorkspaceModel, WorkspaceSnapshot } from './model.ts'
 
@@ -86,6 +86,12 @@ export interface IWorkspaces {
    */
   archiveSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
   /**
+   * Read the work a Session is running right now without stopping it.
+   * @param sessionId - Session to inspect.
+   * @returns one entry per reported activity family; empty when idle.
+   */
+  sessionActivity(sessionId: SessionId): Promise<readonly SessionActivity[]>
+  /**
    * Unarchive a Session from the archived Session list.
    * @param sessionId - Session to unarchive.
    */
@@ -158,6 +164,12 @@ export class WorkspaceController extends Service implements IWorkspaces {
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
     const result = await this.model.archiveSession(sessionId, options)
     if (!result.ok) throw new WorkspaceArchiveError(result.error)
+  }
+
+  async sessionActivity(sessionId: SessionId): Promise<readonly SessionActivity[]> {
+    const result = await this.model.sessionActivity(sessionId)
+    if (!result.ok) throw commandError('session activity', result.error)
+    return result.value.activity
   }
 
   async unarchiveSession(sessionId: SessionId): Promise<void> {

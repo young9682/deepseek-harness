@@ -159,6 +159,20 @@ cachedSnapshot( meta: SessionHeader, keys?: readonly Extract<keyof SessionProjec
 cachedPredecessorTitle(meta: SessionHeader): ProjectionSnapshot | undefined
 
 /**
+ * Drop one session's checkpoint row because the session itself is gone.
+ *
+ * The checkpoint stores derived data, so losing a write costs only a longer
+ * tail replay on the next cold read. A failed REMOVAL is different: nothing
+ * later rewrites the row for an absent session, so a swallowed failure would
+ * leave the artifact behind forever — exactly what the caller is trying to
+ * reclaim. This operation therefore rejects instead of logging, and the
+ * caller reports the partial removal.
+ * @param id - the removed session whose checkpoint is dropped.
+ * @returns `true` when a record was removed, `false` when none existed.
+ */
+delete(id: SessionId): Promise<boolean>
+
+/**
  * Hydrate projection cells for an already-prepared Session without another
  * persistence read. The cache seeds matching rows; the supplied exact log
  * advances every unit to the observation cut. No checkpoint is written
@@ -196,7 +210,7 @@ async write(session: Session): Promise<void>
 coldSnapshot( meta: SessionHeader, inheritedEventCount: SessionLogOffset, events: readonly SessionEvent[], ): ProjectionSnapshot
 ```
 
-Types: [Session](session.md) · [SessionEvent](session.md) · [SessionHeader](persistence.md) · [SessionLogOffset](session.md)
+Types: [Session](session.md) · [SessionEvent](session.md) · [SessionHeader](persistence.md) · [SessionId](core.md) · [SessionLogOffset](session.md)
 
 Source: [`packages/session/session-projection-cache/src/index.ts`](../../packages/session/session-projection-cache/src/index.ts)
 

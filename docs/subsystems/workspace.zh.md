@@ -384,6 +384,14 @@ Host service backing the generated `ctx.remote.workspace` namespace.
 @Remote('archiveSession') archiveSession(request: WorkspaceArchiveSessionRequest): Promise<WorkspaceArchiveValue>
 
 /**
+ * Report the work a Session is running right now, without stopping any of
+ * it, so a destructive confirmation can list what it would have to stop.
+ * @param request - Session identity to inspect.
+ * @returns one entry per activity family; empty when the Session is idle.
+ */
+@Remote('sessionActivity') sessionActivity(request: WorkspaceSessionActivityRequest): Promise<WorkspaceSessionActivityValue>
+
+/**
  * Restore one archived Session to Workspace grouping surfaces.
  * @param request - Session identity to unarchive.
  * @returns the complete resulting archive set.
@@ -542,6 +550,16 @@ delete(id: WorkspaceId): Promise<boolean>
 insertBefore(id: WorkspaceId, beforeId?: WorkspaceId): Promise<readonly WorkspaceId[]>
 
 /**
+ * Whether the durable archive set currently holds this session. Callers
+ * that must branch on archival state — a deletion that archived rows refuse,
+ * for instance — ask here rather than reading {@link archivedSessionIds},
+ * so the archive set keeps one home.
+ * @param sessionId - The session to test.
+ * @returns true while the session is archived.
+ */
+isArchived(sessionId: SessionId): boolean
+
+/**
  * Archive one session durably. The session must exist (live or in session
  * persistence); its workspace accounting — or lack of one — is irrelevant.
  * Without `stopActivity` the session must also be inactive: the
@@ -571,6 +589,32 @@ archiveSession(sessionId: SessionId, options: ArchiveSessionOptions = {}): Promi
  * @returns resolution after durability.
  */
 unarchiveSession(sessionId: SessionId): Promise<void>
+
+/**
+ * Ask every provider what work a session is running right now, without
+ * stopping any of it. This is the same `workspace/session-activity`
+ * waterfall {@link archiveSession}'s admission check reads; it is exposed so
+ * a caller can list the work a destructive operation would have to stop
+ * before the user commits to it.
+ * @param sessionId - The session to inspect.
+ * @returns one entry per reported activity family, in provider order; empty
+ *   when the session is idle.
+ */
+sessionActivity(sessionId: SessionId): Promise<readonly SessionActivity[]>
+
+/**
+ * Drop every registry reference to one session whose stored log the caller
+ * has already removed: its archive entry, its pin, its accounting slot in
+ * every workspace, and the header this registry answers `sessionKnown` and
+ * membership from.
+ *
+ * Runs no session-existence check: removing an id cannot introduce an
+ * unknown one, so an id this registry never saw resolves without writing.
+ * Idempotent — a second call finds nothing to change.
+ * @param sessionId - The removed session to forget.
+ * @returns resolution after durability.
+ */
+forgetSession(sessionId: SessionId): Promise<void>
 
 /**
  * Pin one session durably, prepending it to the registry-global pin set.

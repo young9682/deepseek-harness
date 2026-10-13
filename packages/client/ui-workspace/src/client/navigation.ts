@@ -79,6 +79,13 @@ export interface UiWorkspace {
    */
   archiveSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
   /**
+   * Permanently delete a Session and its stored log, returning the main view
+   * to its Workspace when that Session was the current selection.
+   * @param sessionId - Session to delete.
+   * @param options - `stopActivity` stops the Session's running work first instead of refusing.
+   */
+  deleteSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
+  /**
    * Unarchive a Session, restoring it to its recorded Workspace position.
    * @param sessionId - Session to unarchive.
    */
@@ -299,6 +306,13 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
     await this.workspaces.archiveSession(sessionId, options)
+    if (this.mainReference?.sessionId === sessionId) this.clearMain()
+  }
+
+  async deleteSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
+    await this.sessions.delete(sessionId, options)
+    // The removed conversation cannot remain the main view: its row is gone, so
+    // the view returns to the current Workspace with nothing selected.
     if (this.mainReference?.sessionId === sessionId) this.clearMain()
   }
 

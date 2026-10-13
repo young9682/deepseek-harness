@@ -41,6 +41,8 @@ import type {
   SessionCancelValue,
   SessionCreateRequest,
   SessionCreateValue,
+  SessionDeleteRequest,
+  SessionDeleteValue,
   SessionForkRequest,
   SessionForkValue,
   SessionPromptRequest,
@@ -141,6 +143,90 @@ export class SessionCommandController {
     }
     const agentPreset = this.agents.presetForSession(adopted.session)
     return { sessionId, ...(agentPreset === undefined ? {} : { agentPreset }) }
+  }
+
+  /**
+   * Permanently delete one ordinary Session and its stored log.
+   *
+   * The order is load-bearing: running work stops first, then the live Agent
+   * is torn down (which removes the Session from the store and closes its
+   * persistence write handle), and only then is the stored log removed. A
+   * write handle that outlived its files would recreate them on its next
+   * routed event.
+   *
+   * Archived Sessions are refused: archival is the recoverable state, so the
+   * user restores the Session before deleting it and never loses a row they
+   * only meant to hide.
+   * @param request - Session identity and whether to stop its running work.
+   * @returns deletion acknowledgement.
+   * @throws {RemoteError} `session/archived` for an archived Session,
+   *   `session/agent-busy` for a Session owned by subagent routing,
+   *   `session/active` when it has running work and `stopActivity` is not set,
+   *   `session/delete-unavailable` when a live Agent belongs to another owner.
+   */
+  async delete(request: SessionDeleteRequest): Promise<SessionDeleteValue> {
+    const { sessionId } = request
+    if (this.ctx.workspaceRegistry.isArchived(sessionId)) {
+      throw new RemoteError(
+        'session/archived',
+        `session "${sessionId}" is archived; unarchive it before deleting`,
+        { sessionId },
+      )
+    }
+    const attached = this.ctx.sessions.get(sessionId)
+    const live = this.ctx.agents.get(sessionId)
+    if (attached !== undefined && hasApiSessionSubagentOwner(this.ctx, attached, live)) {
+      throw apiSessionSubagentOwnershipError(sessionId)
+    }
+
+    if (request.stopActivity !== true) {
+      const activity = await this.ctx.workspaceRegistry.sessionActivity(sessionId)
+      if (activity.length > 0) {
+        throw new RemoteError(
+          'session/active',
+          `session "${sessionId}" is running work`,
+          { sessionId, activity },
+        )
+      }
+    } else {
+      await this.ctx.parallel('workspace/session-stop', { sessionId })
+    }
+
+    // Decisive teardown: disposing the retained handle removes the Session from
+    // the store (emitting `session/disposed`, whose persistence listener drains
+    // and closes the write handle) before anything on disk is removed.
+    const disposed = await this.agents.disposeLive(sessionId)
+    if (!disposed && this.ctx.sessions.get(sessionId) !== undefined) {
+      throw new RemoteError(
+        'session/delete-unavailable',
+        `session "${sessionId}" is live but its Agent is owned elsewhere`,
+        { sessionId, reason: 'the live Agent is not owned by this API host' },
+      )
+    }
+
+    try {
+      await this.ctx.sessionPersistence.delete(sessionId)
+    } catch (error: unknown) {
+      if (error instanceof Error && error.name === 'SessionPersistenceActiveError') {
+        throw new RemoteError('session/agent-busy', error.message, { reason: 'a write handle is still open' }, { cause: error })
+      }
+      throw new RemoteError(
+        'gateway/internal',
+        `failed to remove the stored log for session "${sessionId}": ${String(error)}`,
+        {},
+        { cause: error },
+      )
+    }
+    // The checkpoint is derived data, but a failure to remove it is reported:
+    // nothing rewrites a removed Session's row, so a swallowed failure leaks
+    // the artifact the caller asked to reclaim.
+    await this.ctx.get('sessionProjectionCache')?.delete(sessionId)
+    await this.ctx.workspaceRegistry.forgetSession(sessionId)
+    // Disposal already announced the removal. A Session that was never live
+    // announced nothing, and its row would otherwise survive the deletion in
+    // every connected client list.
+    if (!disposed) this.ctx.emit('api-session/removed', sessionId)
+    return { deleted: true }
   }
 
   /**
