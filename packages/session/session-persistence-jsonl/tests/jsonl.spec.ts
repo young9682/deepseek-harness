@@ -2142,6 +2142,110 @@ describe('JsonlSessionPersistence: durability and crash semantics', () => {
   })
 })
 
+describe('JsonlSessionPersistence: deletion', () => {
+  let ctx: Context
+  beforeEach(async () => {
+    root = await freshRoot()
+    ctx = new Context()
+    // A Session store, so the live routing the deletion guards against is
+    // actually installed over this backend.
+    await ctx.plugin(SessionStore)
+    await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+  })
+  afterEach(async () => { await ctx.fiber.dispose() })
+
+  /** Materialize one session and return its directory. */
+  async function store(id: string, cwd = '/work'): Promise<string> {
+    const handle = await ctx.sessionPersistence.create(meta(id, cwd))
+    await handle.append(oneTurnLog())
+    await handle.close()
+    return sessionDir(root, cwd, SessionId(id))
+  }
+
+  it('removes the whole session directory, leaving siblings and the project directory intact', async () => {
+    const doomed = await store('doomed')
+    const kept = await store('kept')
+
+    await ctx.sessionPersistence.delete(SessionId('doomed'))
+
+    await expect(stat(doomed)).rejects.toThrow()
+    // The sibling session and its shared project directory survive.
+    expect((await stat(kept)).isDirectory()).toBe(true)
+    expect(await readdir(dirname(kept))).toEqual([encodeSegment(SessionId('kept'))])
+    expect(await ctx.sessionPersistence.stat(SessionId('doomed'))).toBeUndefined()
+    expect((await ctx.sessionPersistence.list()).map(s => s.header.id)).toEqual(['kept'])
+  })
+
+  it('removes every retained generation and the write lock with the directory', async () => {
+    const id = SessionId('generations')
+    const handle = await ctx.sessionPersistence.create(meta('generations', '/work'))
+    await handle.append(oneTurnLog())
+    await handle.close()
+    // A retained historical generation beside the current one, as a completed
+    // migration leaves behind.
+    await writeFile(
+      generationLogPath(root, '/work', id, 0, 'none'),
+      await readFile(rawLogPath(root, '/work', id)),
+    )
+
+    const dir = sessionDir(root, '/work', id)
+    expect((await readdir(dir)).length).toBeGreaterThan(1)
+
+    await ctx.sessionPersistence.delete(id)
+    await expect(stat(dir)).rejects.toThrow()
+  })
+
+  it('a removed session never returns: a later live event writes nothing into a fresh directory', async () => {
+    const id = SessionId('stays-gone')
+    const dir = await store('stays-gone')
+    await ctx.sessionPersistence.delete(id)
+
+    // The session's write claim is gone, so the live router drops its events
+    // instead of materializing a new directory for them.
+    const session = ctx.sessions.create(id)
+    session.append('turn/start', { turn: 1 })
+    await scheduler.wait(LIVE_WRITE_BATCH_MAX_DELAY_MS * 2)
+
+    await expect(stat(dir)).rejects.toThrow()
+    expect(await ctx.sessionPersistence.stat(id)).toBeUndefined()
+  })
+
+  it('deletes a session whose only artifact is a flushed empty header', async () => {
+    const id = SessionId('empty-header')
+    const handle = await ctx.sessionPersistence.create(meta('empty-header', '/work'))
+    await handle.flush()
+    await handle.close()
+    const dir = sessionDir(root, '/work', id)
+    expect((await stat(dir)).isDirectory()).toBe(true)
+
+    await ctx.sessionPersistence.delete(id)
+    await expect(stat(dir)).rejects.toThrow()
+  })
+
+  it('delete of a never-existed or already-removed id resolves without touching a sibling', async () => {
+    const kept = await store('bystander')
+    await expect(ctx.sessionPersistence.delete(SessionId('phantom'))).resolves.toBeUndefined()
+    await ctx.sessionPersistence.delete(SessionId('bystander'))
+    await expect(ctx.sessionPersistence.delete(SessionId('bystander'))).resolves.toBeUndefined()
+    await expect(stat(kept)).rejects.toThrow()
+  })
+
+  it('a later instance over the same root cannot see the removed session', async () => {
+    await store('across-restart')
+    await ctx.sessionPersistence.delete(SessionId('across-restart'))
+    await ctx.fiber.dispose()
+
+    const restarted = new Context()
+    await restarted.plugin(JsonlSessionPersistence, { root, compression: 'none' })
+    try {
+      expect(await restarted.sessionPersistence.stat(SessionId('across-restart'))).toBeUndefined()
+      expect((await restarted.sessionPersistence.list()).map(s => s.header.id)).not.toContain('across-restart')
+    } finally {
+      await restarted.fiber.dispose()
+    }
+  })
+})
+
 describe('JsonlSessionPersistence: scanLog unit', () => {
   it('requires exactly one newline-terminated header record', () => {
     const header = JSON.stringify(toHeaderLine(meta('scanner-header')))
@@ -2578,6 +2682,22 @@ describe('JsonlSessionPersistence: edge cases', () => {
     await ctx.plugin(JsonlSessionPersistence, { root, compression: 'none' })
   })
   afterEach(async () => { await ctx.fiber.dispose() })
+
+  it('answers awaitClosed immediately for a handle that is still open', async () => {
+    const m = meta('open-handle-settles', '/work')
+    await writeLog(ctx.sessionPersistence, m, oneTurnLog())
+    const handle = await ctx.sessionPersistence.open(m.id, 'read')
+    try {
+      // The seam types only `close()`; the jsonl handle also answers when its
+      // close finishes. An open handle owns its files, so there is nothing to
+      // wait for — the deletion path relies on that to stay synchronous for
+      // the common case.
+      const settling = (handle as unknown as { awaitClosed(): Promise<void> }).awaitClosed()
+      await expect(settling).resolves.toBeUndefined()
+    } finally {
+      await handle.close()
+    }
+  })
 
   it('create snapshots its meta: mutating the caller object after the call is ignored', async () => {
     const m = meta('create-snap', '/orig')

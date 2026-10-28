@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-10-13-session-deletion-and-live-teardown.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-10-13-session-deletion-and-live-teardown.md
+/agent-note-session-deletion-and-live-teardown:
+  en: 5c8df36b3408c209
+  zh: 0f577b4cabcc7bc8
+/agent-note-session-deletion-and-live-teardown/problem:
+  en: 12a6ac6a78d070ad
+  zh: d13cf758ca89728e
+/agent-note-session-deletion-and-live-teardown/decision:
+  en: 6bd4a9aa61b70d1e
+  zh: de20c21d32e6bd69
+/agent-note-session-deletion-and-live-teardown/alternatives-considered:
+  en: b4f1fae5c10dd57a
+  zh: 215696b9b59f0a8f
+/agent-note-session-deletion-and-live-teardown/consequences:
+  en: ffe128a12129f5ec
+  zh: 608b7cedf0b06b70
+/agent-note-session-deletion-and-live-teardown/related:
+  en: dec241915e3a63b5
+  zh: 1984e96a7ab16271

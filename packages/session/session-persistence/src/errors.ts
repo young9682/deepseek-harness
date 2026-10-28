@@ -36,6 +36,20 @@ export class SessionAlreadyOwnedError extends Error {
   }
 }
 
+/**
+ * `delete` targeted a session this backend instance still has an OPEN write
+ * handle for. The handle must be closed (or its session disposed) before the
+ * stored artifacts can be removed; a handle that is already closing is awaited
+ * by `delete` rather than refused.
+ */
+export class SessionPersistenceActiveError extends Error {
+  /** @param sessionId - the session whose active write handle blocks deletion. */
+  constructor(readonly sessionId: SessionId) {
+    super(`session "${sessionId}" has an active write handle in this process; close it before deleting`)
+    this.name = 'SessionPersistenceActiveError'
+  }
+}
+
 /** A mutation (`append`/`flush`) was called on a read handle. */
 export class SessionReadOnlyError extends Error {
   /**

@@ -25,6 +25,8 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSessionActivityRequest,
+  WorkspaceSessionActivityValue,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
@@ -180,6 +182,18 @@ export class WorkspaceCommands {
       throw error
     }
     return { archivedSessionIds: [...this.ctx.workspaceRegistry.archivedSessionIds] }
+  }
+
+  /**
+   * Report the work one Session is running without stopping any of it.
+   * @param request - Session identity to inspect.
+   * @returns one entry per activity family; empty when the Session is idle.
+   */
+  async sessionActivity(request: WorkspaceSessionActivityRequest): Promise<WorkspaceSessionActivityValue> {
+    return {
+      sessionId: request.sessionId,
+      activity: await this.ctx.workspaceRegistry.sessionActivity(request.sessionId),
+    }
   }
 
   /**

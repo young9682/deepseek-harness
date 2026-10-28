@@ -25,6 +25,8 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSessionActivityRequest,
+  WorkspaceSessionActivityValue,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
@@ -159,6 +161,17 @@ export class WorkspaceController extends TypertRemoteService {
   @Remote('archiveSession')
   archiveSession(request: WorkspaceArchiveSessionRequest): Promise<WorkspaceArchiveValue> {
     return this.commands.archiveSession(request)
+  }
+
+  /**
+   * Report the work a Session is running right now, without stopping any of
+   * it, so a destructive confirmation can list what it would have to stop.
+   * @param request - Session identity to inspect.
+   * @returns one entry per activity family; empty when the Session is idle.
+   */
+  @Remote('sessionActivity')
+  sessionActivity(request: WorkspaceSessionActivityRequest): Promise<WorkspaceSessionActivityValue> {
+    return this.commands.sessionActivity(request)
   }
 
   /**

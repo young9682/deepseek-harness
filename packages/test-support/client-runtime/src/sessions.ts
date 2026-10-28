@@ -311,7 +311,7 @@ export class TestSessions implements ISessions {
 
   /** Calls observed on the service-level face, newest last. */
   readonly calls: {
-    method: 'create' | 'refreshProjections' | 'refresh' | 'search' | 'fork'
+    method: 'create' | 'delete' | 'refreshProjections' | 'refresh' | 'search' | 'fork'
     args: unknown[]
   }[] = []
 
@@ -321,6 +321,7 @@ export class TestSessions implements ISessions {
   /** Replaceable search behavior (see {@link TestSessions.stubSearch}). */
   private searchStub: ((query: string, signal: AbortSignal) => { items: SessionSearchResultItem[]; hasMore: boolean }) | undefined
   private createStub: ((opts: Parameters<ISessions['create']>[0]) => Promise<SessionId>) | undefined
+  private deleteStub: ((sessionId: SessionId, options: { readonly stopActivity?: boolean }) => Promise<void>) | undefined
 
   /**
    * @param stabilize - the owning runtime's act wrapper.
@@ -680,6 +681,30 @@ export class TestSessions implements ISessions {
   fork(opts: Parameters<ISessions['fork']>[0]): Promise<SessionId> {
     this.calls.push({ method: 'fork', args: [opts] })
     return Promise.resolve(opts.sessionId)
+  }
+
+  /**
+   * Install delete behavior for scenarios asserting a refusal.
+   * @param impl - replacement behavior; the call is still recorded first.
+   */
+  stubDelete(impl: (sessionId: SessionId, options: { readonly stopActivity?: boolean }) => Promise<void>): void {
+    this.deleteStub = impl
+  }
+
+  /**
+   * Permanently delete one fixture Session (recorded). The default drops the
+   * row and its generation, mirroring the Host face; a scenario asserting the
+   * archived or running-work refusal installs {@link TestSessions.stubDelete}.
+   * @param sessionId - Session to delete.
+   * @param options - `stopActivity` is recorded and otherwise ignored here.
+   */
+  async delete(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
+    this.calls.push({ method: 'delete', args: [sessionId, options] })
+    if (this.deleteStub !== undefined) {
+      await this.deleteStub(sessionId, options)
+      return
+    }
+    await this.remove(sessionId)
   }
 
   /**

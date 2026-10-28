@@ -98,6 +98,7 @@ export const VIEWER_ENDPOINT_CLASSES = {
   'job/list': 'owner-only', // owner background jobs
   'fileReferences/list': 'owner-only', // owner composer reference search
   'session/create': 'owner-only', // owner creates a Session
+  'session/delete': 'owner-only', // owner permanently deletes a Session and its stored log
   'session/initializeDefaultModel': 'owner-only', // owner initializes a Session default model
   'session/openWorkspacePath': 'owner-only', // owner opens a Workspace path
   'session/search': 'owner-only', // owner searches across Sessions
@@ -131,6 +132,7 @@ export const VIEWER_ENDPOINT_CLASSES = {
   'workspace/insertSessionBefore': 'owner-only', // owner reorders Sessions
   'workspace/pinSession': 'owner-only', // owner pins a Session
   'workspace/rename': 'owner-only', // owner renames a Workspace
+  'workspace/sessionActivity': 'owner-only', // owner reads what a Session is running before a destructive confirmation
   'workspace/unarchiveSession': 'owner-only', // owner unarchives a Session
   'workspace/unpinSession': 'owner-only', // owner unpins a Session
   'workspaceFiles/changes': 'owner-only', // owner Workspace file access

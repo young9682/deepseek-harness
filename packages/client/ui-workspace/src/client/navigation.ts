@@ -96,6 +96,13 @@ export interface UiWorkspace {
    */
   archiveSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
   /**
+   * Permanently delete a Session and its stored log, returning the main view
+   * to its Workspace when that Session was the current selection.
+   * @param sessionId - Session to delete.
+   * @param options - `stopActivity` stops the Session's running work first instead of refusing.
+   */
+  deleteSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
+  /**
    * Unarchive a Session, restoring it to its recorded Workspace position.
    * @param sessionId - Session to unarchive.
    */
@@ -354,7 +361,7 @@ class UiWorkspaceService extends Service implements UiWorkspace {
         this.notify({ kind: 'createFailed', message: this.ctx.locale.bind('workspace')('draft.workspaceRequired') })
         return
       }
-      this.clearMain()
+      this.clearMain(true)
       return
     }
     const opening = this.openWorkspace(target, initializeDraft ? (id) => {
@@ -381,7 +388,14 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
     await this.workspaces.archiveSession(sessionId, options)
-    if (this.mainReference?.sessionId === sessionId) this.clearMain()
+    if (this.mainReference?.sessionId === sessionId) this.clearMain(false)
+  }
+
+  async deleteSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
+    await this.sessions.delete(sessionId, options)
+    // The removed conversation cannot remain the main view: its row is gone, so
+    // the view returns to the current Workspace with nothing selected.
+    if (this.mainReference?.sessionId === sessionId) this.clearMain(false)
   }
 
   async unarchiveSession(sessionId: SessionId): Promise<void> {
@@ -508,16 +522,18 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     const current = this.mainReference?.sessionId
     if (current === undefined
       || !this.workspaces.list.getSnapshot().archivedSessionIds.includes(current)) return false
-    this.clearMain()
+    this.clearMain(false)
     return true
   }
 
-  private clearMain(): void {
+  private clearMain(discard: boolean): void {
     const previous = this.mainReference
     this.mainReference = undefined
     this.selection.set({})
+    const abandoned = discard && previous !== undefined ? this.abandonedBlank(previous.sessionId) : undefined
     previous?.release()
     this.ctx.layout.selectPanel(null)
+    this.discardAbandoned(abandoned)
   }
 
   private replaceMain(
@@ -548,8 +564,71 @@ class UiWorkspaceService extends Service implements UiWorkspace {
     }
     const previous = this.mainReference
     this.mainReference = reference
+    const abandoned = previous === undefined ? undefined : this.abandonedBlank(previous.sessionId)
     previous?.release()
     if (panel === 'reveal') this.ctx.layout.selectPanel(null)
+    this.discardAbandoned(abandoned)
+  }
+
+  /**
+   * Identify a Session the main view is leaving that should not keep its log.
+   *
+   * A Session that started no turn is unreachable once it is no longer the
+   * current blank: navigation hides non-current blanks and blank rows render no
+   * actions. Leaving it is therefore the only moment its empty log can be
+   * reclaimed. A draft, staged attachment, queued message, or in-flight
+   * submission keeps it — the row is hidden, so a later cleanup could not warn
+   * the user before destroying what they typed.
+   * @param sessionId - the Session identity the main view is leaving.
+   * @returns the identity to delete, or undefined when it must stay.
+   */
+  private abandonedBlank(sessionId: SessionId): SessionId | undefined {
+    if (this.mainReference?.sessionId === sessionId) return undefined
+    const summary = this.sessions.list.getSnapshot().byId[sessionId]
+    if (summary === undefined || !summary.blank) return undefined
+    // `blank` flips only on `turn/start`; a logged prompt whose turn never
+    // started is still a record.
+    if (summary.projectionValues?.sessionListMetadata?.lastPromptAt != null) return undefined
+    if (this.workspaces.list.getSnapshot().archivedSessionIds.includes(sessionId)) return undefined
+    const otherSources = Object.entries(summary.retainedBy)
+      // The right sidebar retains the main selection for its Session views and
+      // drops them after their committed mounts unmount, so the source that
+      // mirrors the view being left is still counted here. Treating it as an
+      // independent owner would keep every blank forever.
+      .filter(([source]) => source !== 'mainView' && source !== 'sidebarView')
+      .reduce((total, [, count]) => total + count, 0)
+    if (otherSources > 0) return undefined
+    return this.composerEmpty(sessionId) ? sessionId : undefined
+  }
+
+  /**
+   * @param sessionId - retained Session whose composer decides whether the
+   *   blank may be discarded.
+   * @returns whether the composer holds no draft, attachment, queue, or
+   *   in-flight submission; an unavailable composer or scope keeps the Session.
+   */
+  private composerEmpty(sessionId: SessionId): boolean {
+    const conversation = this.ctx.get('conversation')
+    if (conversation === undefined) return false
+    const scope = this.sessions.scope(sessionId)
+    if (scope === undefined) return false
+    try {
+      const state = conversation.input.for(scope).state.getSnapshot()
+      return state.draft.trim() === '' && state.attachmentIds.length === 0
+        && state.queue.length === 0 && state.phase === 'plain'
+    } catch {
+      // The facade refuses a Session scope it no longer retains; keeping the
+      // log is the recoverable side of that race.
+      return false
+    }
+  }
+
+  /** @param sessionId - abandoned identity to remove, already validated. */
+  private discardAbandoned(sessionId: SessionId | undefined): void {
+    if (sessionId === undefined) return
+    void this.sessions.delete(sessionId).catch((reason: unknown) => {
+      console.warn('abandoned Session cleanup failed:', reason)
+    })
   }
 
 }

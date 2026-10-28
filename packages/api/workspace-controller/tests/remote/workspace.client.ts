@@ -22,6 +22,8 @@ import type {
   WorkspacePinSessionRequest,
   WorkspacePinValue,
   WorkspaceRenameRequest,
+  WorkspaceSessionActivityRequest,
+  WorkspaceSessionActivityValue,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
@@ -107,5 +109,9 @@ export const workspaceWorld: RemoteTable = {
     'workspace/unarchiveSession': (_request: WorkspaceUnarchiveSessionRequest): RemoteResult<WorkspaceArchiveValue> => ok({ archivedSessionIds: [] }),
     'workspace/pinSession': (request: WorkspacePinSessionRequest): RemoteResult<WorkspacePinValue> => ok({ pinnedSessionIds: [request.sessionId] }),
     'workspace/unpinSession': (_request: WorkspaceUnpinSessionRequest): RemoteResult<WorkspacePinValue> => ok({ pinnedSessionIds: [] }),
+    'workspace/sessionActivity': (request: WorkspaceSessionActivityRequest): RemoteResult<WorkspaceSessionActivityValue> => ok({
+      sessionId: request.sessionId,
+      activity: [],
+    }),
   },
 }

@@ -621,7 +621,15 @@
   color: var(--dsw-alias-label-secondary);
 }
 
-/* The stop-and-archive dialog's list of work that will be stopped. */
+/* The delete dialog's lead-in for work that confirmation stops. */
+.deleteWarning {
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--dsw-alias-label-primary);
+}
+
+/* The stop-and-archive and delete dialogs' list of work that will be stopped. */
 .archiveActivity {
   margin: 0 0 8px;
   padding-left: 18px;

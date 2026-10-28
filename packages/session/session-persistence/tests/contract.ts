@@ -20,6 +20,7 @@ import {
   SessionAlreadyOwnedError,
   SessionFormatUnsupportedError,
   SessionHandleClosedError,
+  SessionPersistenceActiveError,
   SessionPersistenceNotFoundError,
   SessionReadOnlyError,
 } from '../src/index.ts'
@@ -574,6 +575,108 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
         }
       } finally {
         await backend.dispose()
+      }
+    })
+
+    it('delete removes every trace of the session for this instance and a fresh one', async () => {
+      const backend = await make()
+      try {
+        const m = meta('deleted', '/work')
+        const handle = await backend.persistence.create(m)
+        await handle.append(oneTurnLog())
+        await handle.close()
+        expect(await backend.persistence.stat(m.id)).toBeDefined()
+
+        await backend.persistence.delete(m.id)
+        expect(await backend.persistence.stat(m.id)).toBeUndefined()
+        expect((await backend.persistence.list()).map(s => s.header.id)).not.toContain(m.id)
+        await expect(backend.persistence.open(m.id, 'read')).rejects.toBeInstanceOf(SessionPersistenceNotFoundError)
+        await expect(backend.persistence.open(m.id, 'write')).rejects.toBeInstanceOf(SessionPersistenceNotFoundError)
+        // The refusal released its ownership claim, so retrying is the same refusal.
+        await expect(backend.persistence.open(m.id, 'write')).rejects.toBeInstanceOf(SessionPersistenceNotFoundError)
+        // A removed id is free for a fresh create, not a duplicate.
+        const recreated = await backend.persistence.create(meta('deleted', '/work'))
+        await recreated.close()
+
+        if (backend.reopen !== undefined) {
+          const reopened = await backend.reopen()
+          try {
+            expect(await reopened.persistence.stat(m.id)).toBeUndefined()
+            expect((await reopened.persistence.list()).map(s => s.header.id)).not.toContain(m.id)
+            await expect(reopened.persistence.open(m.id, 'read')).rejects.toBeInstanceOf(SessionPersistenceNotFoundError)
+          } finally {
+            await reopened.dispose()
+          }
+        }
+      } finally {
+        await backend.dispose()
+      }
+    })
+
+    it('delete of an absent session resolves, twice', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const absent = SessionId('never-stored')
+        await expect(persistence.delete(absent)).resolves.toBeUndefined()
+        await expect(persistence.delete(absent)).resolves.toBeUndefined()
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('delete refuses SessionPersistenceActiveError while a write handle is open, changing nothing', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('active-claim')
+        const writer = await persistence.create(m)
+        // A created-but-unmaterialized session is owned too: its creator would
+        // materialize into the removed directory.
+        await expect(persistence.delete(m.id)).rejects.toBeInstanceOf(SessionPersistenceActiveError)
+        await writer.append(oneTurnLog())
+        await expect(persistence.delete(m.id)).rejects.toBeInstanceOf(SessionPersistenceActiveError)
+        // The refusals left the stored log intact and readable.
+        expect((await writer.read()).events).toEqual(oneTurnLog())
+        expect((await persistence.stat(m.id))?.header).toMatchObject(m)
+        await writer.close()
+
+        // A read handle takes no write claim, so it never blocks deletion.
+        const reader = await persistence.open(m.id, 'read')
+        await persistence.delete(m.id)
+        expect(await persistence.stat(m.id)).toBeUndefined()
+        await reader.close()
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('delete resolves after the blocking write handle closes', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('close-then-delete')
+        const writer = await persistence.create(m)
+        await writer.append(oneTurnLog())
+        await writer.close()
+
+        await persistence.delete(m.id)
+        expect(await persistence.stat(m.id)).toBeUndefined()
+        expect((await persistence.list()).map(s => s.header.id)).not.toContain(m.id)
+      } finally {
+        await dispose()
+      }
+    })
+
+    it('delete of a created-but-unappended session resolves once its creator closed it away', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        const m = meta('unappended')
+        const creator = await persistence.create(m)
+        await creator.close()
+        // Closing without appending erased the session; removal's postcondition
+        // already holds, so delete resolves rather than rejecting NotFound.
+        await expect(persistence.delete(m.id)).resolves.toBeUndefined()
+        expect(await persistence.stat(m.id)).toBeUndefined()
+      } finally {
+        await dispose()
       }
     })
 

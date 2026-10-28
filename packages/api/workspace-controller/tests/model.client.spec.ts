@@ -17,6 +17,8 @@ import type {
   WorkspacePinValue,
   WorkspaceRenameRequest,
   WorkspaceUnarchiveSessionRequest,
+  WorkspaceSessionActivityRequest,
+  WorkspaceSessionActivityValue,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
   WorkspaceId,
@@ -102,6 +104,10 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
     _request: WorkspaceUnpinSessionRequest,
   ) => Promise<RemoteResult<WorkspacePinValue>> = () =>
     Promise.resolve(remoteOk({ pinnedSessionIds: [] }))
+  onSessionActivity: (
+    request: WorkspaceSessionActivityRequest,
+  ) => Promise<RemoteResult<WorkspaceSessionActivityValue>> = request =>
+    Promise.resolve(remoteOk({ sessionId: request.sessionId, activity: [] }))
 
   create(request: WorkspaceCreateRequest): Promise<RemoteResult<WorkspaceCreateValue>> {
     this.record('create', request)
@@ -146,6 +152,13 @@ class FakeWorkspaceRemote implements WorkspaceRemote {
   unpinSession(request: WorkspaceUnpinSessionRequest): Promise<RemoteResult<WorkspacePinValue>> {
     this.record('unpinSession', request)
     return this.onUnpinSession(request)
+  }
+
+  sessionActivity(
+    request: WorkspaceSessionActivityRequest,
+  ): Promise<RemoteResult<WorkspaceSessionActivityValue>> {
+    this.record('sessionActivity', request)
+    return this.onSessionActivity(request)
   }
 
   follow(_signal?: AbortSignal): RemoteStreamHandle<WorkspaceFollowFrame, never> {
@@ -472,6 +485,30 @@ describe('ClientWorkspaceModel', () => {
     model.replacePinned([sid('other')])
     expect(model.getSnapshot()).not.toBe(before)
     expect(model.getSnapshot().pinnedSessionIds).toEqual([sid('other')])
+  })
+
+  it('reads session activity without installing any Workspace state', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('kept')], [sid('hidden')], [sid('pinned')])
+    const before = model.getSnapshot()
+
+    remote.onSessionActivity = request => Promise.resolve(remoteOk({
+      sessionId: request.sessionId,
+      activity: [],
+    }))
+    await expect(model.sessionActivity(sid('busy'))).resolves.toMatchObject({
+      ok: true, value: { sessionId: 'busy', activity: [] },
+    })
+    expect(remote.calls).toContainEqual({ method: 'sessionActivity', request: { sessionId: 'busy' } })
+    // A point-in-time read: the list, archive set, and pin set are untouched.
+    expect(model.getSnapshot()).toBe(before)
+
+    remote.onSessionActivity = () => Promise.resolve(workspaceError(
+      new RemoteError('gateway/internal', 'wire down', {}),
+    ))
+    await expect(model.sessionActivity(sid('busy'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot()).toBe(before)
   })
 
   it('keeps the latest pin reply when overlapping requests settle out of order', async () => {

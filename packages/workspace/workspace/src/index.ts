@@ -346,6 +346,18 @@ export class WorkspaceRegistry extends Service {
   }
 
   /**
+   * Whether the durable archive set currently holds this session. Callers
+   * that must branch on archival state — a deletion that archived rows refuse,
+   * for instance — ask here rather than reading {@link archivedSessionIds},
+   * so the archive set keeps one home.
+   * @param sessionId - The session to test.
+   * @returns true while the session is archived.
+   */
+  isArchived(sessionId: SessionId): boolean {
+    return this.requireState().archivedSessionIds.includes(sessionId)
+  }
+
+  /**
    * Archive one session durably. The session must exist (live or in session
    * persistence); its workspace accounting — or lack of one — is irrelevant.
    * Without `stopActivity` the session must also be inactive: the
@@ -406,6 +418,54 @@ export class WorkspaceRegistry extends Service {
         ...state,
         archivedSessionIds: state.archivedSessionIds.filter(id => id !== sessionId),
       })
+    })
+  }
+
+  /**
+   * Ask every provider what work a session is running right now, without
+   * stopping any of it. This is the same `workspace/session-activity`
+   * waterfall {@link archiveSession}'s admission check reads; it is exposed so
+   * a caller can list the work a destructive operation would have to stop
+   * before the user commits to it.
+   * @param sessionId - The session to inspect.
+   * @returns one entry per reported activity family, in provider order; empty
+   *   when the session is idle.
+   */
+  sessionActivity(sessionId: SessionId): Promise<readonly SessionActivity[]> {
+    return this.ctx.waterfall('workspace/session-activity', { sessionId }, () => Promise.resolve([]))
+  }
+
+  /**
+   * Drop every registry reference to one session whose stored log the caller
+   * has already removed: its archive entry, its pin, its accounting slot in
+   * every workspace, and the header this registry answers `sessionKnown` and
+   * membership from.
+   *
+   * Runs no session-existence check: removing an id cannot introduce an
+   * unknown one, so an id this registry never saw resolves without writing.
+   * Idempotent — a second call finds nothing to change.
+   * @param sessionId - The removed session to forget.
+   * @returns resolution after durability.
+   */
+  forgetSession(sessionId: SessionId): Promise<void> {
+    return this.enqueueOperation(async () => {
+      // The chain slot serializes against every other registry write, so no
+      // concurrent archive or pin can re-add the id behind this cleanup.
+      const state = this.requireState()
+      const archivedSessionIds = state.archivedSessionIds.filter(id => id !== sessionId)
+      const pinnedSessionIds = state.pinnedSessionIds.filter(id => id !== sessionId)
+      if (
+        archivedSessionIds.length !== state.archivedSessionIds.length
+        || pinnedSessionIds.length !== state.pinnedSessionIds.length
+      ) {
+        await this.setState({ ...state, archivedSessionIds, pinnedSessionIds })
+      }
+      // Drop the indexed header BEFORE detaching, so no membership re-check
+      // during the workspace writes can resolve the removed id back in.
+      this.headers.delete(sessionId)
+      this.sessionPaths.delete(sessionId)
+      this.invalidSessionPaths.delete(sessionId)
+      for (const entity of this.entities.values()) await entity.detachSession(sessionId)
     })
   }
 

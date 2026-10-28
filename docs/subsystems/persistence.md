@@ -4,7 +4,13 @@ English | [中文](persistence.zh.md)
 
 The **durability seam** for the event log. [session.md](session.md) describes the in-memory `Session` — the append-only `SessionEvent` log that is the source of truth. This page describes how that log is made durable: the abstract `SessionPersistence` service, its provider model and shipped JSONL backend, the flush checkpoint, crash recovery, and the metadata header that travels alongside the log. The event vocabulary the log carries is enumerated, member by member, in the generated [persistence log event catalog](../persistence-catalog.md).
 
-The seam is a [capability seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md): one abstract service ([dsh-session-persistence](../../packages/session/session-persistence), `ctx.sessionPersistence`) exposing `create`/`open`/`stat`/`list` over the existing `SessionEvent` — **no parallel persisted event type** — where `create` and `open` return a per-session `SessionHandle` (`read`/`append`/`flush`/`close`) that carries all log access and single-writer ownership. The repository ships [dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl) as its provider; out-of-tree providers may implement the same service contract. See the [handle-based persistence Agent Note](../../.agents/notes/implemented/architecture/2026-08-27-handle-based-session-persistence.md) and the [session-persistence reference](../../packages/session/session-persistence/README.md).
+The seam is a [capability seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.md): one abstract service ([dsh-session-persistence](../../packages/session/session-persistence), `ctx.sessionPersistence`) exposing `create`/`open`/`stat`/`list`/`flush`/`delete` over the existing `SessionEvent` — **no parallel persisted event type** — where `create` and `open` return a per-session `SessionHandle` (`read`/`append`/`flush`/`close`) that carries all log access and single-writer ownership. The repository ships [dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl) as its provider; out-of-tree providers may implement the same service contract. See the [handle-based persistence Agent Note](../../.agents/notes/implemented/architecture/2026-08-27-handle-based-session-persistence.md) and the [session-persistence reference](../../packages/session/session-persistence/README.md).
+
+## Deletion — removing one stored session
+
+`delete(id)` permanently removes every artifact the backend owns for one session: the complete stored log (all retained generations) and the backend's per-session bookkeeping beside it. Content-addressed artifacts shared with other sessions — attachments above all — are never touched, because no reverse index maps them to one session. The operation is idempotent: an id the backend cannot see resolves, since removal's postcondition already holds. Refusal is the interesting case: a backend refuses with `SessionPersistenceActiveError` while this instance still holds an **open** write handle for the id, because the live write path routes later events into that handle and would recreate the log. A handle already closing is awaited rather than refused — the shipped provider's `session/disposed` listener starts its final drain without awaiting it, so a caller that disposed the session and then deletes immediately must not be turned away by a close still in flight. Once `delete` resolves, `stat`/`list`/`open` observe no trace of the id on this instance or on a later one over the same storage.
+
+The seam defines removal; the caller decides which sessions to remove. Nothing in the seam ages sessions out, and there is no bulk prune ([decision](../../.agents/notes/implemented/architecture/2026-10-13-session-deletion-and-live-teardown.md)).
 
 ## `SessionHandle` — one open channel onto a stored session
 
@@ -420,6 +426,29 @@ abstract stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<S
  * @returns one snapshot per stored session.
  */
 abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+/**
+ * Permanently remove every artifact this backend owns for one session: the
+ * complete stored log (all retained generations) and the session's own
+ * bookkeeping beside it. Content-addressed artifacts shared with other
+ * sessions — attachments above all — are never touched.
+ *
+ * Idempotent: a session this backend cannot see resolves, because removal's
+ * postcondition already holds. A `session/disposed` writer whose close is
+ * still draining is awaited rather than refused.
+ *
+ * Refuses with {@link SessionPersistenceActiveError} while this instance
+ * holds an OPEN write handle for the id: the live write path would recreate
+ * the log after removal. Close the handle (or dispose the session) first.
+ *
+ * Once `delete` resolves, `stat`, `list`, and `open` observe no trace of the
+ * id — on this instance and on a later one over the same storage.
+ * @param id - the stored session to remove.
+ * @param options - optional cancellation.
+ * @throws {SessionPersistenceActiveError} when this instance still owns an
+ *   open write handle for the session.
+ */
+abstract delete(id: SessionId, options?: SessionPersistenceDeleteOptions): Promise<void>
 ```
 
 Types: [SessionId](core.md)

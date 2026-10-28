@@ -149,6 +149,11 @@ class TestPersistence extends SessionPersistence {
     }))
   }
 
+  // The double keeps no per-session write claim, so removal is unconditional.
+  async delete(id: SessionId): Promise<void> {
+    this.durable.delete(id)
+  }
+
   private handle(stored: StoredSession, access: SessionAccess): SessionHandle {
     let closed = false
     const handle: SessionHandle = {
