@@ -894,6 +894,18 @@ describe('delete action', () => {
     expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(requestDeleteSession))
   })
 
+  it('renders nothing when the Session access excludes deletion', () => {
+    const { state } = openMenu()
+    const { container } = render(
+      <DeleteSessionMenuItem
+        {...menuRow(state)}
+        useSessionAccess={() => false}
+        requestDeleteSession={vi.fn()}
+      />,
+    )
+    expect(container.textContent).toBe('')
+  })
+
   it('never deletes on the click alone: refusal and confirmation live behind the injected callback', () => {
     const { state } = openMenu()
     const requestDeleteSession = vi.fn()

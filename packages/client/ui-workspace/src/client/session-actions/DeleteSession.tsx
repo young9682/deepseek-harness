@@ -28,15 +28,17 @@ import browserCss from '../rows/WorkspaceBrowser.module.css'
 
 /**
  * Menu row (order 500, after archive and drawing a separator): delete the
- * Session and its stored log. The injected behavior owns the archived guard,
- * so the row just asks.
+ * Session and its stored log. Absent while the Session's access snapshot
+ * excludes `session/delete`, as for a share viewer. The injected behavior owns
+ * the archived guard, so the row just asks.
  * @param props - owner share, the delete share, and the menu open state.
  * @returns the row.
  */
 export function DeleteSessionMenuItem({
-  sessionId, displayTitle, useMenuOpenState, requestDeleteSession, t,
+  sessionId, displayTitle, useMenuOpenState, useSessionAccess, requestDeleteSession, t,
 }: SessionMenuItemProps<DeleteSessionInjected>) {
   const [, setMenuOpen] = useMenuOpenState()
+  if (!useSessionAccess(sessionId, 'session/delete')) return null
   return (
     <MenuItemButton
       danger
