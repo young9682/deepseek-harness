@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { WorkspaceId, WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { SessionActivity, WorkspaceId, WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -929,7 +929,7 @@ describe('SessionDeleteConfirmDialog', () => {
   ) {
     const request = createSnapshotStore<SessionDeleteConfirmRequest | null>(null)
     const settleSessionDelete = vi.fn(() => { request.set(null) })
-    render(
+    const view = render(
       <SessionDeleteConfirmDialog
         {...overlay}
         t={translate}
@@ -942,7 +942,7 @@ describe('SessionDeleteConfirmDialog', () => {
     const ask = (): void => {
       act(() => { request.set({ sessionId: sid('one'), displayTitle: 'Doomed session' }) })
     }
-    return { settleSessionDelete, ask }
+    return { settleSessionDelete, ask, unmount: view.unmount }
   }
 
   it('renders nothing until a confirmation is requested', () => {
@@ -1004,5 +1004,51 @@ describe('SessionDeleteConfirmDialog', () => {
     expect(settleSessionDelete).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: '取消' }))
     expect(settleSessionDelete).toHaveBeenCalledOnce()
+  })
+
+  it('drops a late activity read on both arms once the dialog has unmounted', async () => {
+    // A read that answers after the dialog is gone must not set state: the
+    // success arm and the failure arm share the same liveness guard.
+    let settleActivity: ((value: readonly SessionActivity[]) => void) | undefined
+    const pending = new Promise<readonly SessionActivity[]>((resolve) => { settleActivity = resolve })
+    const answered = deleteDialog(vi.fn(async () => {}), () => pending)
+    answered.ask()
+    answered.unmount()
+    settleActivity?.([])
+    await act(async () => { await pending })
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    let failActivity: ((reason: unknown) => void) | undefined
+    const failing = new Promise<readonly SessionActivity[]>((_, reject) => { failActivity = reject })
+    const failed = deleteDialog(vi.fn(async () => {}), () => failing)
+    failed.ask()
+    failed.unmount()
+    failActivity?.(new Error('late failure'))
+    await act(async () => { await failing.catch(() => undefined) })
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('ignores Cancel while the deletion is in flight', async () => {
+    let finish: (() => void) | undefined
+    const inFlight = new Promise<void>((resolve) => { finish = resolve })
+    const confirmSessionDelete = vi.fn(() => inFlight)
+    const { settleSessionDelete, ask } = deleteDialog(confirmSessionDelete)
+    ask()
+    fireEvent.click(await screen.findByRole('button', { name: '删除会话' }))
+    // The dialog is busy: closing it must not settle the request out from
+    // under the removal that is already running.
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(settleSessionDelete).not.toHaveBeenCalled()
+    await act(async () => { finish?.() })
+    await waitFor(() => { expect(settleSessionDelete).toHaveBeenCalledOnce() })
+  })
+
+  it('renders a non-Error rejection by its string form', async () => {
+    const confirmSessionDelete = vi.fn<SessionDeleteConfirmInjected['confirmSessionDelete']>()
+      .mockRejectedValueOnce('plain refusal')
+    const { ask } = deleteDialog(confirmSessionDelete)
+    ask()
+    fireEvent.click(await screen.findByRole('button', { name: '删除会话' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('plain refusal') })
   })
 })

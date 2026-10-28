@@ -373,6 +373,8 @@ describe('WorkspaceController', () => {
     await expect(controller.unarchiveSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.pinSession(sid('session'))).resolves.toBeUndefined()
     await expect(controller.unpinSession(sid('session'))).resolves.toBeUndefined()
+    // A point-in-time read: it returns the reported families and installs nothing.
+    await expect(controller.sessionActivity(sid('session'))).resolves.toEqual([])
     await expect(controller.delete(wid('one'))).resolves.toBeUndefined()
     // Each command crosses the wire as one positional request object.
     expect(mock.log.requests('workspace/create')).toEqual([{ path: '/work/created' }])
@@ -384,6 +386,7 @@ describe('WorkspaceController', () => {
     expect(mock.log.requests('workspace/unarchiveSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/pinSession')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/unpinSession')).toEqual([{ sessionId: 'session' }])
+    expect(mock.log.requests('workspace/sessionActivity')).toEqual([{ sessionId: 'session' }])
     expect(mock.log.requests('workspace/delete')).toEqual([{ workspaceId: 'one' }])
   })
 
@@ -430,6 +433,9 @@ describe('WorkspaceController', () => {
     mock.remote.workspace.unpinSession.mockResolvedValueOnce(err(missingSession))
     await expect(controller.unpinSession(sid('session')))
       .rejects.toThrow('workspace session unpin failed: session/not-found: missing session')
+    mock.remote.workspace.sessionActivity.mockResolvedValueOnce(err(missingSession))
+    await expect(controller.sessionActivity(sid('session')))
+      .rejects.toThrow('workspace session activity failed: session/not-found: missing session')
     mock.remote.workspace.insertSessionBefore.mockResolvedValueOnce(err(new RemoteError(
       'workspace/move-invalid', 'invalid move', { workspaceId: wid('missing'), sessionId: sid('session') },
     )))

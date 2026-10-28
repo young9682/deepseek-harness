@@ -2683,6 +2683,22 @@ describe('JsonlSessionPersistence: edge cases', () => {
   })
   afterEach(async () => { await ctx.fiber.dispose() })
 
+  it('answers awaitClosed immediately for a handle that is still open', async () => {
+    const m = meta('open-handle-settles', '/work')
+    await writeLog(ctx.sessionPersistence, m, oneTurnLog())
+    const handle = await ctx.sessionPersistence.open(m.id, 'read')
+    try {
+      // The seam types only `close()`; the jsonl handle also answers when its
+      // close finishes. An open handle owns its files, so there is nothing to
+      // wait for — the deletion path relies on that to stay synchronous for
+      // the common case.
+      const settling = (handle as unknown as { awaitClosed(): Promise<void> }).awaitClosed()
+      await expect(settling).resolves.toBeUndefined()
+    } finally {
+      await handle.close()
+    }
+  })
+
   it('create snapshots its meta: mutating the caller object after the call is ignored', async () => {
     const m = meta('create-snap', '/orig')
     const p = ctx.sessionPersistence.create(m)

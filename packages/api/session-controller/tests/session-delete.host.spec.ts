@@ -16,6 +16,7 @@ import type { SessionActivity } from '@deepseek-ai/dsh-workspace'
 import { describe, expect, it, vi } from 'vitest'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { SessionCommandController } from '../src/commands.ts'
+import SessionController from '../src/index.ts'
 import { installSessionReadTestServices } from './test-remote.ts'
 
 const sid = (id: string): SessionId => id as SessionId
@@ -166,6 +167,39 @@ describe('session.delete refusals', () => {
     expect(b.removed).toEqual([])
     await b.ctx.fiber.dispose()
   })
+
+  it('refuses a Session owned by subagent routing before asking for teardown', async () => {
+    const b = await harness()
+    // A child Session is delivered through subagent routing; tearing its Agent
+    // down here would revoke a run its owner still needs.
+    b.ctx.sessions.create(sid('child'), {
+      meta: { cwd: '/proj', parentSession: sid('parent'), origin: 'subagent' },
+    })
+
+    await expect(b.controller.delete({ sessionId: sid('child') })).rejects.toMatchObject({
+      code: 'session/agent-busy',
+      details: { reason: 'use subagent delivery for this child session' },
+    })
+    expect(b.order).toEqual([])
+    expect(b.persistenceDelete).not.toHaveBeenCalled()
+    await b.ctx.fiber.dispose()
+  })
+
+  it('reports an open write handle as session/agent-busy rather than a generic failure', async () => {
+    const b = await harness()
+    liveSession(b, 'open-handle')
+    b.persistenceDelete.mockRejectedValueOnce(Object.assign(new Error('the write handle is still open'), {
+      name: 'SessionPersistenceActiveError',
+    }))
+
+    await expect(b.controller.delete({ sessionId: sid('open-handle') })).rejects.toMatchObject({
+      code: 'session/agent-busy',
+      details: { reason: 'a write handle is still open' },
+    })
+    // The checkpoint still describes a log that is on disk, so it stays.
+    expect(b.checkpointDelete).not.toHaveBeenCalled()
+    await b.ctx.fiber.dispose()
+  })
 })
 
 describe('session.delete ordering', () => {
@@ -244,5 +278,34 @@ describe('session.delete failure reporting', () => {
     // The later steps did not run against a Session whose files survived.
     expect(b.checkpointDelete).not.toHaveBeenCalled()
     await b.ctx.fiber.dispose()
+  })
+})
+
+describe('session.delete teardown capability', () => {
+  it('disposes a retained handle once and then reports having nothing left to tear down', async () => {
+    const b = await harness()
+    const agents = new ApiSessionAgentController(b.ctx)
+    // Nothing retained: this controller holds no teardown capability.
+    await expect(agents.disposeLive(sid('never-retained'))).resolves.toBe(false)
+
+    const handle = { agent: { id: sid('retained') }, dispose: vi.fn(async () => {}) }
+    ;(agents as unknown as { handles: Map<SessionId, unknown> }).handles.set(sid('retained'), handle)
+    await expect(agents.disposeLive(sid('retained'))).resolves.toBe(true)
+    expect(handle.dispose).toHaveBeenCalledOnce()
+    // The capability is spent: a second request finds nothing to dispose, so
+    // the caller knows this controller may not be the Session's owner.
+    await expect(agents.disposeLive(sid('retained'))).resolves.toBe(false)
+    await b.ctx.fiber.dispose()
+  })
+
+  it('delegates the Remote facade to the command controller', async () => {
+    const deleteCommand = vi.fn(async () => ({ deleted: true }))
+    const request = { sessionId: sid('facade') }
+    const facade = SessionController.prototype.delete.call(
+      { commands: { delete: deleteCommand } } as unknown as InstanceType<typeof SessionController>,
+      request,
+    )
+    await expect(facade).resolves.toEqual({ deleted: true })
+    expect(deleteCommand).toHaveBeenCalledWith(request)
   })
 })

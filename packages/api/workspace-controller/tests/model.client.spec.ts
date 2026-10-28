@@ -487,6 +487,30 @@ describe('ClientWorkspaceModel', () => {
     expect(model.getSnapshot().pinnedSessionIds).toEqual([sid('other')])
   })
 
+  it('reads session activity without installing any Workspace state', async () => {
+    const remote = new FakeWorkspaceRemote()
+    const model = modelFor(remote)
+    baseline(model, [workspace('kept')], [sid('hidden')], [sid('pinned')])
+    const before = model.getSnapshot()
+
+    remote.onSessionActivity = request => Promise.resolve(remoteOk({
+      sessionId: request.sessionId,
+      activity: [],
+    }))
+    await expect(model.sessionActivity(sid('busy'))).resolves.toMatchObject({
+      ok: true, value: { sessionId: 'busy', activity: [] },
+    })
+    expect(remote.calls).toContainEqual({ method: 'sessionActivity', request: { sessionId: 'busy' } })
+    // A point-in-time read: the list, archive set, and pin set are untouched.
+    expect(model.getSnapshot()).toBe(before)
+
+    remote.onSessionActivity = () => Promise.resolve(workspaceError(
+      new RemoteError('gateway/internal', 'wire down', {}),
+    ))
+    await expect(model.sessionActivity(sid('busy'))).resolves.toMatchObject({ ok: false })
+    expect(model.getSnapshot()).toBe(before)
+  })
+
   it('keeps the latest pin reply when overlapping requests settle out of order', async () => {
     const remote = new FakeWorkspaceRemote()
     const model = modelFor(remote)
