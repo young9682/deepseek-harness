@@ -542,7 +542,7 @@ describe('UiWorkspaceService', () => {
     it('discards a blank whose only extra reference mirrors the main view', async () => {
       const b = bench({
         sessions: sessionState([
-          blankRow('blank', { retainedBy: { mainView: 1, sidebarView: 1 } as never }), summary('other'),
+          blankRow('blank', { retainedBy: { mainView: 1, sidebarView: 1 } }), summary('other'),
         ], 'pending'),
       })
       leave(b)
