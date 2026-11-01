@@ -52,6 +52,19 @@ export function registerToasts(
       }),
     }, ToastEntry<PropsRuntime<'workspace.toast', 'archivedNotOpenable'>>)
     yield ctx.slots.register({
+      name: 'workspace.toast', key: 'archivedNotDeletable', locale: 'workspace',
+      inject: (): ToastDisplayInjected<'archivedNotDeletable'> => ({
+        display: (_notice, t) => ({ text: t('toast.archivedNotDeletable'), tone: 'warning' }),
+      }),
+    }, ToastEntry<PropsRuntime<'workspace.toast', 'archivedNotDeletable'>>)
+    yield ctx.slots.register({
+      name: 'workspace.toast', key: 'deleted', locale: 'workspace',
+      inject: (): ToastDisplayInjected<'deleted'> => ({
+        // No recovery action: the Session and its stored log are gone.
+        display: (_notice, t) => ({ text: t('toast.deleted'), tone: 'success' }),
+      }),
+    }, ToastEntry<PropsRuntime<'workspace.toast', 'deleted'>>)
+    yield ctx.slots.register({
       name: 'workspace.toast', key: 'defaultWorkspaceFailed', locale: 'workspace',
       inject: (): ToastDisplayInjected<'defaultWorkspaceFailed'> => ({
         display: (_notice, t) => ({ text: t('defaultWorkspace.failed'), tone: 'warning' }),

@@ -53,6 +53,8 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
  * @param navigation - session creation and forking from the pointer controls' navigation service.
  * @param controls - browser-owned opening requests.
  * @param archiveSession - shared archive action, including running-work confirmation and notices.
+ * @param deleteSession - shared delete action: it raises the confirmation
+ *   dialog, or the archived notice when that row cannot be deleted.
  * @param reportForkFailure - publish a classified failure through the frame-wide notice channel.
  */
 export function installWorkspaceShortcuts(
@@ -60,6 +62,7 @@ export function installWorkspaceShortcuts(
   navigation: Pick<UiWorkspace, 'startSession' | 'forkSession'>,
   controls: ReturnType<typeof createWorkspaceShortcutControls>,
   archiveSession: (sessionId: SessionId) => void,
+  deleteSession: (sessionId: SessionId, displayTitle: string) => void,
   reportForkFailure: (reason: 'unavailable' | 'failed') => void,
 ): void {
   const t = ctx.locale.bind('workspace')
@@ -113,6 +116,15 @@ export function installWorkspaceShortcuts(
     return target === undefined ? { status: 'blocked', reason: t('shortcut.noSession') }
       : { status: 'handled', run: () => {
         archiveSession(target.id)
+      } }
+  })
+  // Irreversible, so it raises the same confirmation the row menu does rather
+  // than deleting on the keystroke. An archived target diverts to the notice.
+  register('session.delete', () => t('menu.deleteSession'), ['delete session'], 'KeyD', ['primary', 'shift'], ['primary', 'alt'], () => {
+    const target = current()
+    return target === undefined ? { status: 'blocked', reason: t('shortcut.noSession') }
+      : { status: 'handled', run: () => {
+        deleteSession(target.id, target.displayTitle)
       } }
   })
 }

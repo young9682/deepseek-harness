@@ -62,6 +62,8 @@ kind: "package-reference"
 
 ### 缓存保证什么
 
+`delete(id)` 因会话本身已消失而丢弃一条记录。与这里的所有写入不同，它会抛错而不是记日志：写入失败只是让下一次冷读多回放一段尾部，但没有任何机制会为已不存在的会话重写该行，因此吞掉失败会把调用方想要回收的产物永久留下。
+
 日志领先，缓存跟随：活会话检查点先把会话的缓冲事件持久化，然后才保存缓存记录。因此崩溃可能让缓存落后于日志，但绝不会让缓存领先。读取和写入共享存储域内一致的内存状态；逐单元写入链只在持久化成功后修改内存。每个带版本戳的记录必须匹配当前运行单元的 schema 与生命周期身份（`formatVersion`、`createdAt`、`cwd`、`isSeeded`）；fold 面（`hydratePrepared`、`coldSnapshot` 与检查点写入）还要求精确的 `inheritedEventCount`，因此从另一会话格式代或 fork 切点折叠出的行不能播种调用方。JSON 后端把每条记录存于仅所有者可访问的 `<root>/session_projcache/sessions/<id>.json` 目录树中。Domain 读取校验保留检查点值中的所有自有 JSON 键，包括不透明元数据中的 `__proto__` 与 `constructor`。它拒绝无法无损完成 JSON 往返的值，并与检查点写入使用相同规则。随后，每个 projection 用自己的 `stateSchema` 校验 hydration 状态；承载不透明 JSON 的字段需要使用保留其键的校验器。
 
 升级绝不拖垮启动，也不会暴露未经证明的折叠结果。版本戳落在 spec `compatibleVersions` 集合内的记录仍可被结构化读取并等待当前检查点重写，但缺失或更旧的 `formatVersion` 绝不匹配当前 Session，因此不能作为 hydrate seed。生命周期匹配的 predecessor title 只能通过上述列表 hint 读取，因为 title 文本在相邻 Session format edge 之间保持不变，并且该 row 仍须通过当前 projection `stateVersion` 与 schema。格式匹配后，缺失的 lineage 字段解码为 unseeded lineage——对非 fork 会话精确无误，seeded 调用方则通不过身份比对、回落冷折叠。仍然通不过 schema 校验的存量记录会按域的 `invalidRecords: 'backup-and-skip'` 策略移出为 `<id>.json.bak.<时间戳>`、连同原因写入日志，并由下一次检查点重建。
@@ -124,7 +126,7 @@ kind: "package-reference"
 
 这些限制说明缓存何时需要运维注意。它们是当前包约束，不是任务积压。
 
-- **无淘汰或保留接口**——记录按会话持续累积；清理已存储检查点属于带外维护，与会话持久化采用相同策略。
+- **无淘汰或保留接口**——记录按会话持续累积；只有在调用方要求时 `delete(id)` 才移除某一条（与移除该会话的存储日志同时进行），没有任何机制淘汰其余记录。
 - **间隔节流采用按会话的粗粒度控制**——一次无脏数据的写入完成后，计时器在首个脏事件到达时启动；持续但低于条数阈值的事件流每间隔写入一次，而非滑动窗口。
 - **缓存侧不做冷重折叠**——缓存只服务并刷新自己的记录，从不读取会话日志，因为它不依赖持久化层；需要保证冷快照的消费方自行从日志重新折叠。
 - **每次 schema 或域版本变更都必须论证升级路径**——改动存储记录 schema 或域版本时，同一 PR 必须在 `tests/fixtures/` 下归档此前已发布磁盘格式的 fixture（测试前置数据），并在 `tests/fixtures.spec.ts` 中用测试论证所选的处置方式：读兼容恢复（`compatibleVersions`）、当前版本重写，或 backup-and-skip 抢救。即便选择直接丢弃旧记录的 bump，也要证明丢弃既不会导致启动失败，也不会污染缓存树。

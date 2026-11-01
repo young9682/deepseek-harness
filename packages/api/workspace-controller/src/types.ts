@@ -124,6 +124,17 @@ export interface WorkspaceArchiveSessionRequest {
   readonly stopActivity?: boolean
 }
 
+/** Session whose running work is inspected before a destructive action. */
+export interface WorkspaceSessionActivityRequest {
+  readonly sessionId: SessionId
+}
+
+/** Every activity family the Session is running right now, in provider order. */
+export interface WorkspaceSessionActivityValue {
+  readonly sessionId: SessionId
+  readonly activity: readonly SessionActivity[]
+}
+
 /** Session requested for restoration from the archived Session list. */
 export interface WorkspaceUnarchiveSessionRequest {
   readonly sessionId: SessionId

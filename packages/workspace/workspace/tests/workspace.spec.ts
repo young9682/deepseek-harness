@@ -1264,6 +1264,79 @@ describe('registry-global session unarchive', () => {
   })
 })
 
+describe('registry-global session forget', () => {
+  it('drops the archive entry, the pin, and the accounting slot of one removed session', async () => {
+    const dir = await makeDir('forget-home')
+    const result = await harness({
+      sessions: [header('gone', dir, 100), header('kept', dir, 200)],
+    })
+    const workspace = result.registry.list()[0]!
+    // Bootstrap orders the newest header first.
+    expect(workspace.sessionIds).toEqual(['kept', 'gone'])
+    await result.registry.archiveSession(SessionId('gone'))
+    await result.registry.pinSession(SessionId('kept'))
+    expect(result.registry.isArchived(SessionId('gone'))).toBe(true)
+
+    await result.registry.forgetSession(SessionId('gone'))
+
+    expect(result.registry.archivedSessionIds).toEqual([])
+    expect(result.registry.isArchived(SessionId('gone'))).toBe(false)
+    // The pin belonged to the surviving session and is untouched.
+    expect(result.registry.pinnedSessionIds).toEqual(['kept'])
+    expect(result.registry.list()[0]!.sessionIds).toEqual(['kept'])
+    expect(storedState(result.pool).archivedSessionIds).toEqual([])
+  })
+
+  it('is idempotent, writes nothing for an unknown id, and stops answering from the header cache', async () => {
+    const dir = await makeDir('forget-idempotent')
+    const result = await harness({ sessions: [header('gone', dir, 100)] })
+
+    await result.registry.forgetSession(SessionId('never-seen'))
+    expect(result.changes.filter(change => change.table === '').length).toBe(0)
+
+    await result.registry.forgetSession(SessionId('gone'))
+    const writesAfterFirst = result.changes.filter(change => change.table !== '').length
+    await result.registry.forgetSession(SessionId('gone'))
+    expect(result.changes.filter(change => change.table !== '').length).toBe(writesAfterFirst)
+
+    // The cached header is gone, so the next existence question has to consult
+    // persistence rather than answering from the index this registry kept.
+    result.list.mockRejectedValueOnce(new Error('persistence backend down'))
+    await expect(result.registry.archiveSession(SessionId('gone')))
+      .rejects.toThrow(/persistence backend down/)
+  })
+
+  it('reads the pin and clears nothing when only a pin references the removed session', async () => {
+    const dir = await makeDir('forget-pinned')
+    const result = await harness({ sessions: [header('pinned', dir, 100)] })
+    await result.registry.pinSession(SessionId('pinned'))
+
+    await result.registry.forgetSession(SessionId('pinned'))
+
+    expect(result.registry.pinnedSessionIds).toEqual([])
+    expect(storedState(result.pool).pinnedSessionIds).toEqual([])
+    expect(result.registry.list()[0]!.sessionIds).toEqual([])
+  })
+
+  it('reports running work through the same waterfall archive admission reads', async () => {
+    const dir = await makeDir('session-activity')
+    const result = await harness({ sessions: [header('busy', dir, 100), header('quiet', dir, 200)] })
+    result.ctx.on('workspace/session-activity', async ({ sessionId }, next) => {
+      const rest = await next()
+      return sessionId === 'busy'
+        ? [{ kind: 'probe', items: [{ id: 'item-1', label: 'build' }] }, ...rest]
+        : rest
+    })
+
+    expect(await result.registry.sessionActivity(SessionId('busy'))).toEqual([
+      { kind: 'probe', items: [{ id: 'item-1', label: 'build' }] },
+    ])
+    expect(await result.registry.sessionActivity(SessionId('quiet'))).toEqual([])
+    // Reading activity changes nothing: it is not an admission check.
+    expect(result.registry.archivedSessionIds).toEqual([])
+  })
+})
+
 describe('registry-global session pin', () => {
   it('pins durably in prepend order, idempotently skips repeats, and leaves accounting untouched', async () => {
     const dir = await makeDir('pin-home')

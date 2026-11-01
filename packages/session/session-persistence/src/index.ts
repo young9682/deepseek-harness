@@ -29,6 +29,7 @@ export {
   SessionFormatUnsupportedError,
   SessionHandleClosedError,
   SessionOwnershipLostError,
+  SessionPersistenceActiveError,
   SessionPersistenceCorruptionError,
   SessionPersistenceNotFoundError,
   SessionReadOnlyError,
@@ -112,6 +113,12 @@ export interface SessionPersistenceStatOptions {
 /** Options for {@link SessionPersistence.list}. */
 export interface SessionPersistenceListOptions {
   /** Optional cancellation for backend listing work. */
+  readonly signal?: AbortSignal
+}
+
+/** Options for {@link SessionPersistence.delete}. */
+export interface SessionPersistenceDeleteOptions {
+  /** Optional cancellation observed before backend work starts. */
   readonly signal?: AbortSignal
 }
 
@@ -208,6 +215,29 @@ export abstract class SessionPersistence extends Service {
    * @returns one snapshot per stored session.
    */
   abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+  /**
+   * Permanently remove every artifact this backend owns for one session: the
+   * complete stored log (all retained generations) and the session's own
+   * bookkeeping beside it. Content-addressed artifacts shared with other
+   * sessions — attachments above all — are never touched.
+   *
+   * Idempotent: a session this backend cannot see resolves, because removal's
+   * postcondition already holds. A `session/disposed` writer whose close is
+   * still draining is awaited rather than refused.
+   *
+   * Refuses with {@link SessionPersistenceActiveError} while this instance
+   * holds an OPEN write handle for the id: the live write path would recreate
+   * the log after removal. Close the handle (or dispose the session) first.
+   *
+   * Once `delete` resolves, `stat`, `list`, and `open` observe no trace of the
+   * id — on this instance and on a later one over the same storage.
+   * @param id - the stored session to remove.
+   * @param options - optional cancellation.
+   * @throws {SessionPersistenceActiveError} when this instance still owns an
+   *   open write handle for the session.
+   */
+  abstract delete(id: SessionId, options?: SessionPersistenceDeleteOptions): Promise<void>
 }
 
 export default SessionPersistence

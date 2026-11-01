@@ -228,6 +228,38 @@ describe('sessions', () => {
     await runtime.dispose()
   })
 
+  it('deletes fixture Sessions by default and honors an installed refusal', async () => {
+    const runtime = await runtimeWithFrame()
+    try {
+      await runtime.sessions.add({ id: 'doomed' })
+      // The default mirrors the Host face: the row leaves the list state.
+      await runtime.sessions.delete('doomed' as SessionId)
+      expect(runtime.sessions.list.getSnapshot().byId['doomed' as SessionId]).toBeUndefined()
+
+      // A scenario asserting the archived or running-work refusal installs a
+      // stub; the call is still recorded and the default removal is skipped.
+      await runtime.sessions.add({ id: 'spared' })
+      const accepted = vi.fn(async () => {})
+      runtime.sessions.stubDelete(accepted)
+      await runtime.sessions.delete('spared' as SessionId, { stopActivity: true })
+      expect(accepted).toHaveBeenCalledWith('spared', { stopActivity: true })
+      expect(runtime.sessions.list.getSnapshot().byId['spared' as SessionId]).toBeDefined()
+
+      const refusal = vi.fn(async () => { throw new Error('session is archived') })
+      runtime.sessions.stubDelete(refusal)
+      await expect(runtime.sessions.delete('s1' as SessionId, { stopActivity: true }))
+        .rejects.toThrow('session is archived')
+      expect(refusal).toHaveBeenCalledWith('s1', { stopActivity: true })
+      expect(runtime.sessions.calls).toEqual([
+        { method: 'delete', args: ['doomed', {}] },
+        { method: 'delete', args: ['spared', { stopActivity: true }] },
+        { method: 'delete', args: ['s1', { stopActivity: true }] },
+      ])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('resolves catalog addresses without retaining their parent', async () => {
     const runtime = await runtimeWithFrame()
     const parentId = 'parent' as SessionId
@@ -883,6 +915,24 @@ describe('workspaces action face', () => {
     await ws.unarchiveSession('s1' as SessionId)
     expect(ws.list.getSnapshot().archivedSessionIds).toEqual(['s1'])
     await runtime.dispose()
+  })
+
+  it('reports an idle default for session activity and honors a stub', async () => {
+    const runtime = await SlotTestRuntime.create()
+    try {
+      const ws = runtime.workspaces
+      // Activity is Host behavior: the default reports an idle Session.
+      await expect(ws.sessionActivity('idle' as SessionId)).resolves.toEqual([])
+      const running = [{ kind: 'turn' as const }]
+      ws.stub('sessionActivity', async () => running)
+      await expect(ws.sessionActivity('busy' as SessionId)).resolves.toEqual(running)
+      expect(ws.calls).toEqual([
+        { method: 'sessionActivity', args: ['idle'] },
+        { method: 'sessionActivity', args: ['busy'] },
+      ])
+    } finally {
+      await runtime.dispose()
+    }
   })
 })
 

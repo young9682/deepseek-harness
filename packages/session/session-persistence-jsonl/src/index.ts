@@ -23,11 +23,12 @@ import pLimit, { type LimitFunction } from 'p-limit'
 import {
   SessionPersistence, SessionPersistenceRevision, SessionFormatUnsupportedError,
   SessionPersistenceCorruptionError,
-  SessionAlreadyExistsError, SessionPersistenceNotFoundError,
+  SessionAlreadyExistsError, SessionPersistenceNotFoundError, SessionPersistenceActiveError,
   assertStoredId, materializeCreateHeader, sessionFormatVersionRefusal, validateStoredEvents,
   type SessionAccess, type SessionHandle,
   type SessionHandleReadResult,
   type SessionLocation, type SessionPersistenceCreateOptions,
+  type SessionPersistenceDeleteOptions,
   type SessionPersistenceListOptions, type SessionPersistenceOpenOptions,
   type SessionPersistenceSnapshot, type SessionPersistenceStatOptions,
   type SessionPersistenceRevision as PersistenceRevision,
@@ -561,6 +562,42 @@ class JsonlSessionPersistence extends SessionPersistence {
     }
     signal?.throwIfAborted()
     return snapshots
+  }
+
+  /**
+   * Remove one session's complete stored log; see the seam contract.
+   *
+   * The session directory is the session's exclusive namespace, so one
+   * recursive removal takes every retained generation, the write-lock file,
+   * and any publication residue. Nothing outside that directory is this
+   * session's to delete — shared content-addressed artifacts and other
+   * sessions' directories are untouched.
+   *
+   * A write handle that is still open would recreate the log on its next
+   * routed event, so it refuses; a handle already closing is awaited, because
+   * `session/disposed` starts its final drain without awaiting it.
+   * @param id - the stored session to remove.
+   * @param options - optional cancellation observed before backend work starts.
+   * @throws {SessionPersistenceActiveError} when this instance holds an open
+   *   write handle for the session.
+   */
+  async delete(id: SessionId, options?: SessionPersistenceDeleteOptions): Promise<void> {
+    options?.signal?.throwIfAborted()
+    await this.ensureRootEncoding()
+    options?.signal?.throwIfAborted()
+    const claim = this.tracker.writerOf(id)
+    if (claim === null || (claim !== undefined && !claim.isClosing())) {
+      throw new SessionPersistenceActiveError(id)
+    }
+    if (claim !== undefined) await claim.awaitClosed()
+    options?.signal?.throwIfAborted()
+    const selected = await this.findLog(id, options?.signal)
+    // Drop this instance's derived caches whether or not an artifact was found:
+    // an absent session resolves, and a stale memo must not survive it.
+    this.coldLogMemo.delete(id)
+    this.migrationPreparations.delete(id)
+    if (selected === undefined) return
+    await rm(dirname(selected.sourcePath), { recursive: true, force: true })
   }
 
   // --- handle-facing storage internals (package-private via the handle class below) ---

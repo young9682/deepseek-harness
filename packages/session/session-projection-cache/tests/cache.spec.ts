@@ -813,6 +813,26 @@ describe('SessionProjectionCache cold-read seeding', () => {
   })
 })
 
+describe('SessionProjectionCache delete', () => {
+  it('drops one session\'s stored row and reports whether a row existed', async () => {
+    const { ctx, root, cache } = await harness()
+    const id = SessionId('doomed')
+    const created = whenWritten(ctx, id)
+    const session = ctx.sessions.create(id)
+    mark(session, ['kept'])
+    await created
+    expect(await storedRecord(root, session.id)).toBeDefined()
+
+    // The caller has already removed the log; dropping the derived row must
+    // actually reach the medium, because nothing rewrites it for an absent
+    // session afterwards.
+    await expect(cache.delete(session.id)).resolves.toBe(true)
+    expect(await storedRecord(root, session.id)).toBeUndefined()
+    // Idempotent: a second removal finds nothing and reports it.
+    await expect(cache.delete(session.id)).resolves.toBe(false)
+  })
+})
+
 describe('SessionProjectionCache summary reads', () => {
   it('serves the summary block from stored rows and excludes the marked unit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-projcache-'))

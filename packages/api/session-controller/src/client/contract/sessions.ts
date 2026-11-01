@@ -122,6 +122,15 @@ export interface ISessions {
     signal: AbortSignal,
   ): Promise<RemoteResult<{ items: SessionSearchResultItem[]; hasMore: boolean }>>
   /**
+   * Permanently delete a Session and its stored log; the row leaves the
+   * published list before this resolves.
+   * @param sessionId - Session to delete.
+   * @param options - `stopActivity` asks the Host to stop the Session's
+   *   running work instead of refusing it as `session/active`.
+   * @throws {SessionDeleteError} carrying the Host refusal code.
+   */
+  delete(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
+  /**
    * Fork a session from an exact inclusive prefix of the source; on
    * resolution the child is catalogued and can be explicitly retained.
    * @param opts - source session id, the optional exact inclusive boundary
