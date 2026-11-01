@@ -64,7 +64,10 @@ async function bench(runtime: 'web' | 'desktop' = 'desktop', platform: ShortcutP
   const select = (id: string) => { list.set({ ...list.getSnapshot(), byId: {
     [sid('a')]: row('a', id === 'a'), [sid('b')]: row('b', id === 'b'),
   } }) }
-  return { ctx, fiber, registry, commands, navigation, controls, deleteSession, reportForkFailure, list, directory, select, history, loadOlder, panelInfo }
+  return {
+    ctx, fiber, registry, commands, navigation, controls, deleteSession, reportForkFailure, list, directory, select,
+    history, loadOlder, panelInfo,
+  }
 }
 
 afterEach(() => { vi.restoreAllMocks() })

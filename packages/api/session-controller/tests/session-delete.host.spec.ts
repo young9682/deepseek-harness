@@ -289,7 +289,8 @@ describe('session.delete teardown capability', () => {
     await expect(agents.disposeLive(sid('never-retained'))).resolves.toBe(false)
 
     const handle = { agent: { id: sid('retained') }, dispose: vi.fn(async () => {}) }
-    ;(agents as unknown as { handles: Map<SessionId, unknown> }).handles.set(sid('retained'), handle)
+    const handles = Reflect.get(agents, 'handles') as Map<SessionId, typeof handle>
+    handles.set(sid('retained'), handle)
     await expect(agents.disposeLive(sid('retained'))).resolves.toBe(true)
     expect(handle.dispose).toHaveBeenCalledOnce()
     // The capability is spent: a second request finds nothing to dispose, so
@@ -301,10 +302,11 @@ describe('session.delete teardown capability', () => {
   it('delegates the Remote facade to the command controller', async () => {
     const deleteCommand = vi.fn(async () => ({ deleted: true }))
     const request = { sessionId: sid('facade') }
-    const facade = SessionController.prototype.delete.call(
-      { commands: { delete: deleteCommand } } as unknown as InstanceType<typeof SessionController>,
-      request,
-    )
+    const deleteFacade = Reflect.get(SessionController.prototype, 'delete') as (
+      this: { commands: { delete: typeof deleteCommand } },
+      sessionRequest: typeof request,
+    ) => Promise<{ deleted: boolean }>
+    const facade = deleteFacade.call({ commands: { delete: deleteCommand } }, request)
     await expect(facade).resolves.toEqual({ deleted: true })
     expect(deleteCommand).toHaveBeenCalledWith(request)
   })

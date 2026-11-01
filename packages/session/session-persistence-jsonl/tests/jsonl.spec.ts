@@ -2692,7 +2692,7 @@ describe('JsonlSessionPersistence: edge cases', () => {
       // close finishes. An open handle owns its files, so there is nothing to
       // wait for — the deletion path relies on that to stay synchronous for
       // the common case.
-      const settling = (handle as unknown as { awaitClosed(): Promise<void> }).awaitClosed()
+      const settling = (handle as JsonlSessionHandle).awaitClosed()
       await expect(settling).resolves.toBeUndefined()
     } finally {
       await handle.close()
