@@ -2,6 +2,7 @@ import type { ContextMenuTarget } from '@deepseek-ai/dsh-client-ui-context-menu/
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { MenuRegistry } from '@deepseek-ai/dsh-client-ui-context-menu/src/client/registry.ts'
 import { Context } from '@deepseek-ai/cordis'
+import { SessionDeleteConfirmDialog } from '../src/client/session-actions/DeleteSession.tsx'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type {
   ISessions, SessionListState, SessionReference, SessionSnapshot, SessionSummary,

@@ -1,4 +1,3 @@
-import { DeleteSessionMenuItem, SessionDeleteConfirmDialog } from '../src/client/session-actions/DeleteSession.tsx'
 // @vitest-environment jsdom
 import { contextMenuHook } from '@deepseek-ai/dsh-client-test-runtime'
 /**
@@ -26,12 +25,14 @@ import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
   RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
+  SessionDeleteConfirmInjected, SessionDeleteConfirmRequest,
   SessionRenameDialogInjected, SessionRenameTarget,
 } from '../src/client/contract/slots.ts'
 import {
   ArchiveSessionRowButton, SessionArchiveConfirmDialog,
 } from '../src/client/session-actions/ArchiveSession.tsx'
 import { PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
+import { DeleteSessionMenuItem, SessionDeleteConfirmDialog } from '../src/client/session-actions/DeleteSession.tsx'
 import { SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
 import { RowActionToast } from '../src/client/session-actions/RowActionToast.tsx'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
@@ -706,6 +707,18 @@ describe('RowActionToast', () => {
     }
   })
 })
+
+/** Owner and injected seats for the standalone delete component. */
+function menuRow(menu: readonly [boolean, (open: boolean) => void]) {
+  return { ...ROW, useMenuOpenState: () => menu, useShortcuts: hook([]), t, ...standard }
+}
+
+/** Open menu with an observable dismissal callback. */
+function openMenu() {
+  const setMenuOpen = vi.fn()
+  const state: readonly [boolean, (open: boolean) => void] = [true, setMenuOpen]
+  return { state, setMenuOpen }
+}
 
 describe('delete action', () => {
   it('menu row closes the menu, then asks for the deletion confirmation', () => {
