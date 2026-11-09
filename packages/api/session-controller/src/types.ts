@@ -12,7 +12,7 @@ import type { SessionId, SessionSeqCursor } from '@deepseek-ai/dsh-session/types
 import type { SessionProjectionMap, SessionProjectionSummaryExcluded, SessionProjectionSummaryValues } from '@deepseek-ai/dsh-session-projection/types'
 import type { Principal } from '@deepseek-ai/dsh-typert-protocol'
 import type { JsonValue } from '@deepseek-ai/dsh-util-values'
-import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
+import type { SessionActivity, WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 
 declare module '@deepseek-ai/dsh-session-projection/types' {
   interface SessionProjectionMap {
@@ -200,6 +200,12 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     }
     'session/attachment-invalid': { readonly reason: string }
     'session/queue-item-not-found': { readonly itemId: MessageId }
+    'session/active': {
+      readonly sessionId: SessionId
+      readonly activity: readonly SessionActivity[]
+    }
+    'session/archived': { readonly sessionId: SessionId }
+    'session/delete-unavailable': { readonly sessionId: SessionId; readonly reason: string }
     'session/steer-unavailable': { readonly itemId: MessageId }
     'session/title-invalid': { readonly sessionId: SessionId }
     'session/fork-unavailable': { readonly sessionId: SessionId }
@@ -301,6 +307,21 @@ export interface SessionRenameRequest {
 export interface SessionRenameValue {
   readonly title: string
   readonly seq: number
+}
+
+/** Session deletion request. */
+export interface SessionDeleteRequest {
+  readonly sessionId: SessionId
+  /**
+   * True asks the Host to stop the Session's running work and then delete it;
+   * omitted, a Session with running work is refused before anything changes.
+   */
+  readonly stopActivity?: boolean
+}
+
+/** Permanent deletion acknowledgement. */
+export interface SessionDeleteValue {
+  readonly deleted: true
 }
 
 /** Session fork request. */

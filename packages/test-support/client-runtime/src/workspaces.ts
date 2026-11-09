@@ -1,7 +1,7 @@
 /** Test-owned workspaces face: the renderer standard-kit observable plus recorded actions. */
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type {
-  IWorkspaces, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
+  IWorkspaces, SessionActivity, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -152,6 +152,20 @@ export class TestWorkspaces implements IWorkspaces {
     await this.update((draft) => {
       draft.archivedSessionIds = [...draft.archivedSessionIds, sessionId]
     })
+  }
+
+  /**
+   * Read a session's running work (recorded). The default reports an idle
+   * Session: activity is Host behavior, so a scenario that asserts the
+   * confirmation dialog's work list installs {@link TestWorkspaces.stub}.
+   * @param sessionId - session to inspect.
+   * @returns the stubbed activity, or an empty list.
+   */
+  async sessionActivity(sessionId: SessionId): Promise<readonly SessionActivity[]> {
+    this.calls.push({ method: 'sessionActivity', args: [sessionId] })
+    const stub = this.stubs.get('sessionActivity')
+    if (stub !== undefined) return await (stub(sessionId) as Promise<readonly SessionActivity[]>)
+    return []
   }
 
   /**

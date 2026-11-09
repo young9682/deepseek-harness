@@ -303,6 +303,31 @@ describe('WorkspaceController commands', () => {
       .resolves.toEqual({ archivedSessionIds: [] })
   })
 
+  it('reports the activity a Session runs without stopping any of it', async () => {
+    const { controller, ctx, root } = await harness()
+    const created = await controller.create({ path: stageDir(root, 'activity') })
+    const session = ctx.sessions.create(SessionId('report-activity'), {
+      meta: { cwd: created.workspace.path },
+    })
+
+    const activity = [
+      { kind: 'probe' as const },
+      { kind: 'probe-items' as const, items: [{ id: 'item-1', label: 'build' }] },
+    ]
+    const stopReporting = ctx.on('workspace/session-activity', async ({ sessionId }, next) =>
+      sessionId === session.id ? [...activity, ...(await next())] : next())
+
+    // The report is a read: it answers with the families, archives nothing,
+    // and raises no stop request.
+    await expect(controller.sessionActivity({ sessionId: session.id }))
+      .resolves.toEqual({ sessionId: session.id, activity })
+    expect([...ctx.workspaceRegistry.archivedSessionIds]).toEqual([])
+    stopReporting()
+
+    await expect(controller.sessionActivity({ sessionId: session.id }))
+      .resolves.toEqual({ sessionId: session.id, activity: [] })
+  })
+
   it('pins only known unarchived Sessions and unpins idempotently', async () => {
     const { controller, ctx, root } = await harness()
     const created = await controller.create({ path: stageDir(root, 'pins') })

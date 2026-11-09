@@ -4,7 +4,13 @@
 
 事件日志的**持久性 seam**。[session.md](session.zh.md) 描述了内存中的 `Session`：仅追加的 `SessionEvent` 日志即为真源。本页描述如何使该日志持久化：抽象的 `SessionPersistence` 服务、它的提供方模型与随产品交付的 JSONL 后端、flush 检查点、崩溃恢复，以及随日志一同存储的元数据头。日志承载的事件词汇在生成的[持久化日志事件目录](../persistence-catalog.zh.md)中逐项列举。
 
-该 seam 是一个[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.zh.md)：一个抽象服务（[dsh-session-persistence](../../packages/session/session-persistence)，`ctx.sessionPersistence`）在现有 `SessionEvent` 上暴露 `create`/`open`/`stat`/`list`——**没有平行的持久化事件类型**——其中 `create` 与 `open` 返回逐会话的 `SessionHandle`（`read`/`append`/`flush`/`close`），它承载全部日志访问与单写者所有权。仓库随产品交付 [dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl) 作为其 provider；仓库外 provider 可以实现同一服务约定。见[基于句柄的持久化 Agent Note](../../.agents/notes/implemented/architecture/2026-08-27-handle-based-session-persistence.zh.md)与 [session-persistence reference](../../packages/session/session-persistence/README.zh.md)。
+该 seam 是一个[能力 seam](../../.agents/notes/implemented/architecture/2026-06-13-capability-seams.zh.md)：一个抽象服务（[dsh-session-persistence](../../packages/session/session-persistence)，`ctx.sessionPersistence`）在现有 `SessionEvent` 上暴露 `create`/`open`/`stat`/`list`/`flush`/`delete`——**没有平行的持久化事件类型**——其中 `create` 与 `open` 返回逐会话的 `SessionHandle`（`read`/`append`/`flush`/`close`），它承载全部日志访问与单写者所有权。仓库随产品交付 [dsh-session-persistence-jsonl](../../packages/session/session-persistence-jsonl) 作为其 provider；仓库外 provider 可以实现同一服务约定。见[基于句柄的持久化 Agent Note](../../.agents/notes/implemented/architecture/2026-08-27-handle-based-session-persistence.zh.md)与 [session-persistence reference](../../packages/session/session-persistence/README.zh.md)。
+
+## 删除——移除单个已存储会话
+
+`delete(id)` 永久移除后端为某一个会话拥有的全部产物：完整存储日志（所有保留代）以及其旁该会话自身的记账。与其他会话共享的内容寻址产物——尤其是附件——绝不被触碰，因为不存在把它们映射到单个会话的反向索引。该操作幂等：后端看不见的 id 直接 resolve，因为移除的后置条件已成立。拒绝才是值得关注的情形：只要本实例仍持有该 id **打开中**的写句柄，后端就以 `SessionPersistenceActiveError` 拒绝，因为实时写入路径会把后续事件路由进该句柄并重建日志。已在关闭中的句柄会被等待而非拒绝——随附提供方的 `session/disposed` 监听器启动最终排空时不 await 它，因此先销毁会话再立即删除的调用方不应被一次仍在途的关闭挡回去。`delete` resolve 之后，`stat`/`list`/`open` 在本实例与之后基于同一存储的新实例上都观察不到该 id 的任何痕迹。
+
+seam 定义移除本身；由调用方决定移除哪些会话。seam 中没有任何机制按龄淘汰会话，也没有批量剪枝（[决策](../../.agents/notes/implemented/architecture/2026-10-13-session-deletion-and-live-teardown.zh.md)）。
 
 ## `SessionHandle`——通向已存储会话的一条打开通道
 
@@ -420,6 +426,29 @@ abstract stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<S
  * @returns one snapshot per stored session.
  */
 abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+/**
+ * Permanently remove every artifact this backend owns for one session: the
+ * complete stored log (all retained generations) and the session's own
+ * bookkeeping beside it. Content-addressed artifacts shared with other
+ * sessions — attachments above all — are never touched.
+ *
+ * Idempotent: a session this backend cannot see resolves, because removal's
+ * postcondition already holds. A `session/disposed` writer whose close is
+ * still draining is awaited rather than refused.
+ *
+ * Refuses with {@link SessionPersistenceActiveError} while this instance
+ * holds an OPEN write handle for the id: the live write path would recreate
+ * the log after removal. Close the handle (or dispose the session) first.
+ *
+ * Once `delete` resolves, `stat`, `list`, and `open` observe no trace of the
+ * id — on this instance and on a later one over the same storage.
+ * @param id - the stored session to remove.
+ * @param options - optional cancellation.
+ * @throws {SessionPersistenceActiveError} when this instance still owns an
+ *   open write handle for the session.
+ */
+abstract delete(id: SessionId, options?: SessionPersistenceDeleteOptions): Promise<void>
 ```
 
 Types: [SessionId](core.zh.md)

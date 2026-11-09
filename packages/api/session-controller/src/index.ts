@@ -42,6 +42,8 @@ import type {
   SessionControlFrame,
   SessionCreateRequest,
   SessionCreateValue,
+  SessionDeleteRequest,
+  SessionDeleteValue,
   SessionFollowFrame,
   SessionFollowRequest,
   SessionForkRequest,
@@ -142,6 +144,7 @@ export class SessionController extends TypertRemoteService {
     'llm',
     'remoteAccess',
     'sessions',
+    'sessionPersistence',
     'sessionProjections',
     'sessionQuery',
     'typert',
@@ -231,6 +234,9 @@ export class SessionController extends TypertRemoteService {
     }
     ctx.on('agent/created', publishAgentAvailability)
     ctx.on('agent/disposed', publishAgentAvailability)
+    // An Agent unloaded for any reason — a deletion, a plugin unload, an owner
+    // fiber unwinding — leaves no teardown capability behind.
+    ctx.on('agent/disposed', ({ agent }) => { this.agents.forgetHandle(agent.id) })
     ctx.on('agent/status', ({ agent, status }) => {
       ctx.emit('api-session/status', agent.id, status === 'running')
     })
@@ -303,6 +309,16 @@ export class SessionController extends TypertRemoteService {
   @Remote('create')
   create(request: SessionCreateRequest): Promise<SessionCreateValue> {
     return this.commands.create(request)
+  }
+
+  /**
+   * Permanently delete one ordinary Session and its stored log.
+   * @param request - Session identity and whether to stop its running work.
+   * @returns deletion acknowledgement.
+   */
+  @Remote('delete')
+  delete(request: SessionDeleteRequest): Promise<SessionDeleteValue> {
+    return this.commands.delete(request)
   }
 
   /**

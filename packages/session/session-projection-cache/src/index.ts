@@ -192,6 +192,22 @@ export class SessionProjectionCache extends Service {
   }
 
   /**
+   * Drop one session's checkpoint row because the session itself is gone.
+   *
+   * The checkpoint stores derived data, so losing a write costs only a longer
+   * tail replay on the next cold read. A failed REMOVAL is different: nothing
+   * later rewrites the row for an absent session, so a swallowed failure would
+   * leave the artifact behind forever — exactly what the caller is trying to
+   * reclaim. This operation therefore rejects instead of logging, and the
+   * caller reports the partial removal.
+   * @param id - the removed session whose checkpoint is dropped.
+   * @returns `true` when a record was removed, `false` when none existed.
+   */
+  delete(id: SessionId): Promise<boolean> {
+    return this.requireTable().delete(id)
+  }
+
+  /**
    * View selected wire rows as one block bound to the lowest served
    * watermark: the seq every served value has folded through at least. The
    * number is the record's own; whether a consumer may compare it with a

@@ -15,6 +15,8 @@ import type {
   WorkspaceOrderValue,
   WorkspacePinSessionRequest,
   WorkspacePinValue,
+  WorkspaceSessionActivityRequest,
+  WorkspaceSessionActivityValue,
   WorkspaceUnarchiveSessionRequest,
   WorkspaceUnpinSessionRequest,
   WorkspaceValue,
@@ -204,6 +206,19 @@ export class ClientWorkspaceModel implements WorkspaceFollowSink {
       this.installPinned(this.pinnedSessionIds.filter(id => id !== sessionId))
     }
     return result
+  }
+
+  /**
+   * Read the work one Session is running right now, without stopping it, so a
+   * destructive confirmation can list what it would have to stop. Installs
+   * nothing: this is a point-in-time read, not Workspace state.
+   * @param sessionId - Session to inspect.
+   * @returns the reported activity families, or the Remote failure.
+   */
+  async sessionActivity(
+    sessionId: WorkspaceSessionActivityRequest['sessionId'],
+  ): Promise<RemoteResult<WorkspaceSessionActivityValue>> {
+    return this.remote.sessionActivity({ sessionId })
   }
 
   /**

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { contextMenuHook } from '@deepseek-ai/dsh-client-test-runtime'
 /**
  * The shipped Session row actions rendered directly with hand-built props:
  * the menu rows, hover buttons, dialogs, and global notices. Every action
@@ -10,7 +11,7 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { SessionListState, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/client'
-import type { WorkspaceId, WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
+import type { SessionActivity, WorkspaceId, WorkspaceSnapshot } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionStatusSnapshot } from '@deepseek-ai/dsh-client-ui-session/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
@@ -23,21 +24,19 @@ import type { ArchiveToastEntryProps } from '../src/client/contract/toast.ts'
 import { en as commonEn } from '@deepseek-ai/dsh-client-locale/src/locales/en.ts'
 import { zh as commonZh } from '@deepseek-ai/dsh-client-locale/src/locales/zh.ts'
 import type {
-  MenuOpenState, RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
+  RowToast, RowToastState, SessionArchiveConfirmInjected, SessionArchiveConfirmRequest,
+  SessionDeleteConfirmInjected, SessionDeleteConfirmRequest,
   SessionRenameDialogInjected, SessionRenameTarget,
 } from '../src/client/contract/slots.ts'
 import {
-  ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog,
+  ArchiveSessionRowButton, SessionArchiveConfirmDialog,
 } from '../src/client/session-actions/ArchiveSession.tsx'
-import { ForkSessionMenuItem } from '../src/client/session-actions/ForkSession.tsx'
-import { PinSessionMenuItem, PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
-import { RenameSessionMenuItem, SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
+import { PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
+import { DeleteSessionMenuItem, SessionDeleteConfirmDialog } from '../src/client/session-actions/DeleteSession.tsx'
+import { SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
 import { RowActionToast } from '../src/client/session-actions/RowActionToast.tsx'
-import { SessionIdMenuItem } from '../src/client/session-actions/SessionId.tsx'
 import { createWorkspaceViewStore } from '../src/client/stores.ts'
 import { en, zh } from '../src/client/locales.ts'
-import { ShortcutRegistry } from '../../shortcuts/src/client/registry.ts'
-import type { ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
 
 afterEach(cleanup)
 
@@ -82,19 +81,13 @@ const standard: GlobalStandardProps = {
   useSessionStatus: hook(noStatus),
   useSessionRetainInfo: () => undefined,
   usePanelInfo,
-  useResource,
+  useContextMenu: contextMenuHook(), useResource,
   useWorkspaces: hook(workspaces),
   ...allowAllAccess,
 }
 
-type MenuRowProps = PropsRuntime<'sidebar.workspaces.session.menu.item'> & PropsLocale<'workspace'>
 type ActionRowProps = PropsRuntime<'sidebar.workspaces.session.row.action'> & PropsLocale<'workspace'>
 type OverlayProps = PropsRuntime<'shell.overlay'> & PropsLocale<'workspace'>
-
-/** Owner share, standard seat, locale seat, and the bound open-state hook of one menu row. */
-function menuRow(menu: MenuOpenState): MenuRowProps {
-  return { ...ROW, useMenuOpenState: () => menu, useShortcuts: hook([]), t, ...standard }
-}
 
 /** Owner share, standard seat, and locale seat of one hover button. */
 const actionRow: ActionRowProps = { ...ROW, t, ...standard }
@@ -102,30 +95,10 @@ const actionRow: ActionRowProps = { ...ROW, t, ...standard }
 /** Standard and locale seats of a `shell.overlay` entry (no owner share). */
 const overlay: OverlayProps = { t, ...standard }
 
-/** An open menu whose setter records the entries' dismissal. */
-function openMenu() {
-  const setMenuOpen = vi.fn()
-  const state: MenuOpenState = [true, setMenuOpen]
-  return { state, setMenuOpen }
-}
-
 /** Position of a mock's `nth` call in the global call sequence (a call that never happened sorts last). */
 function callOrder(fn: { mock: { invocationCallOrder: readonly number[] } }, nth = 0): number {
   return fn.mock.invocationCallOrder[nth] ?? Number.POSITIVE_INFINITY
 }
-
-describe('Session ID action', () => {
-  it.each([t, tEn])('dismisses the menu before copying the complete row ID', (translate) => {
-    const { state, setMenuOpen } = openMenu()
-    const sessionId = sid('session-c4421b66-252e-44c0-80ed-6e320abeba25')
-    const copySessionId = vi.fn(async () => {})
-    render(<SessionIdMenuItem {...menuRow(state)} sessionId={sessionId} t={translate} copySessionId={copySessionId} />)
-    fireEvent.click(screen.getByRole('menuitem', { name: translate('menu.sessionId') }))
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(copySessionId).toHaveBeenCalledExactlyOnceWith(sessionId)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(copySessionId))
-  })
-})
 
 describe('pin action', () => {
   /** The pin share over fixed membership: the bound Set hooks and the two callbacks the entries call. */
@@ -134,28 +107,6 @@ describe('pin action', () => {
     useArchived: hook(idSet(...archived)),
     pinSession: vi.fn(),
     unpinSession: vi.fn(),
-  })
-
-  it('menu row closes the menu, then pins an unpinned Session', () => {
-    const { state, setMenuOpen } = openMenu()
-    const pin = pinShare()
-    render(<PinSessionMenuItem {...menuRow(state)} {...pin} />)
-    fireEvent.click(screen.getByRole('menuitem', { name: '置顶会话' }))
-    expect(pin.pinSession).toHaveBeenCalledWith(sid('one'))
-    expect(pin.unpinSession).not.toHaveBeenCalled()
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(pin.pinSession))
-  })
-
-  it('menu row closes the menu, then unpins a pinned Session', () => {
-    const { state, setMenuOpen } = openMenu()
-    const pin = pinShare(['one'])
-    render(<PinSessionMenuItem {...menuRow(state)} {...pin} />)
-    fireEvent.click(screen.getByRole('menuitem', { name: '取消置顶' }))
-    expect(pin.unpinSession).toHaveBeenCalledWith(sid('one'))
-    expect(pin.pinSession).not.toHaveBeenCalled()
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(pin.unpinSession))
   })
 
   it('row button toggles the pin', () => {
@@ -172,12 +123,7 @@ describe('pin action', () => {
   })
 
   it('offers neither toggle while the access snapshot excludes it for this Session', () => {
-    const { state } = openMenu()
     const useSessionAccess = vi.fn((_id: SessionId, endpoint: string) => endpoint !== 'workspace/pinSession')
-    const menu = render(<PinSessionMenuItem {...menuRow(state)} {...pinShare()} useSessionAccess={useSessionAccess} />)
-    expect(menu.container.innerHTML).toBe('')
-    expect(useSessionAccess).toHaveBeenCalledWith(sid('one'), 'workspace/pinSession')
-    menu.unmount()
     const button = render(<PinSessionRowButton {...actionRow} {...pinShare()} useSessionAccess={useSessionAccess} />)
     expect(button.container.innerHTML).toBe('')
     button.unmount()
@@ -188,60 +134,22 @@ describe('pin action', () => {
   })
 
   it('offers nothing on an archived Session', () => {
-    const { state } = openMenu()
     const pin = pinShare(['one'], ['one'])
-    const menu = render(<PinSessionMenuItem {...menuRow(state)} {...pin} />)
-    expect(menu.container.childElementCount).toBe(0)
     const button = render(<PinSessionRowButton {...actionRow} {...pin} />)
-    expect(button.container.childElementCount).toBe(0)
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(button.container.innerHTML).toBe('')
   })
 })
 
 describe('archive action', () => {
-  /** The archive share over fixed membership: the bound Set hook and the two callbacks the entries call. */
   const archiveShare = (archived: readonly string[] = []) => ({
-    useArchived: hook(idSet(...archived)),
-    archiveSession: vi.fn(),
-    unarchiveSession: vi.fn(),
+    useArchived: hook(idSet(...archived)), archiveSession: vi.fn(), unarchiveSession: vi.fn(),
   })
 
-  it('menu row closes the menu, then archives', () => {
-    const { state, setMenuOpen } = openMenu()
-    const archive = archiveShare()
-    render(<ArchiveSessionMenuItem {...menuRow(state)} {...archive} />)
-    const row = screen.getByRole('menuitem', { name: '归档会话' })
-    // Archive is not destructive (log and accounting slot remain): no danger styling.
-    expect(row.className).not.toMatch(/danger/)
-    fireEvent.click(row)
-    expect(archive.archiveSession).toHaveBeenCalledWith(sid('one'))
-    expect(archive.unarchiveSession).not.toHaveBeenCalled()
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(archive.archiveSession))
-  })
-
-  it('menu row closes the menu, then restores an archived Session', () => {
-    const { state, setMenuOpen } = openMenu()
-    const archive = archiveShare(['one'])
-    render(<ArchiveSessionMenuItem {...menuRow(state)} {...archive} />)
-    fireEvent.click(screen.getByRole('menuitem', { name: '取消归档' }))
-    expect(archive.unarchiveSession).toHaveBeenCalledWith(sid('one'))
-    expect(archive.archiveSession).not.toHaveBeenCalled()
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(archive.unarchiveSession))
-  })
-
-  it('offers neither the archive row nor its button while the access snapshot excludes archiving', () => {
-    const { state } = openMenu()
+  it('offers no archive button without access but checks restore separately', () => {
     const useSessionAccess = vi.fn((_id: SessionId, endpoint: string) => endpoint !== 'workspace/archiveSession')
-    const menu = render(<ArchiveSessionMenuItem {...menuRow(state)} {...archiveShare()} useSessionAccess={useSessionAccess} />)
-    expect(menu.container.innerHTML).toBe('')
-    expect(useSessionAccess).toHaveBeenCalledWith(sid('one'), 'workspace/archiveSession')
-    menu.unmount()
     const button = render(<ArchiveSessionRowButton {...actionRow} {...archiveShare()} useSessionAccess={useSessionAccess} />)
     expect(button.container.innerHTML).toBe('')
     button.unmount()
-    // An archived row asks for its restore endpoint instead.
     const archived = render(<ArchiveSessionRowButton {...actionRow} {...archiveShare(['one'])} useSessionAccess={useSessionAccess} />)
     expect(useSessionAccess).toHaveBeenLastCalledWith(sid('one'), 'workspace/unarchiveSession')
     expect(archived.getByRole('button')).toBeTruthy()
@@ -256,48 +164,6 @@ describe('archive action', () => {
     fireEvent.click(screen.getByRole('button', { name: '取消归档' }))
     expect(archive.unarchiveSession).toHaveBeenCalledWith(sid('one'))
     expect(archive.archiveSession).toHaveBeenCalledOnce()
-  })
-})
-
-describe('fork and rename rows', () => {
-  it('fork closes the menu, then forks the Session', () => {
-    const { state, setMenuOpen } = openMenu()
-    const forkSession = vi.fn()
-    render(<ForkSessionMenuItem {...menuRow(state)} forkSession={forkSession} />)
-    fireEvent.click(screen.getByRole('menuitem', { name: '分叉会话' }))
-    expect(forkSession).toHaveBeenCalledWith(sid('one'))
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(forkSession))
-  })
-
-  it('omits the fork row when the access snapshot excludes session/fork for this Session', () => {
-    const { state } = openMenu()
-    const useSessionAccess = vi.fn(() => false)
-    const { container } = render(
-      <ForkSessionMenuItem {...menuRow(state)} useSessionAccess={useSessionAccess} forkSession={vi.fn()} />,
-    )
-    expect(container.innerHTML).toBe('')
-    expect(useSessionAccess).toHaveBeenCalledWith(sid('one'), 'session/fork')
-  })
-
-  it('omits the rename row when the access snapshot excludes session/rename for this Session', () => {
-    const { state } = openMenu()
-    const useSessionAccess = vi.fn(() => false)
-    const view = render(
-      <RenameSessionMenuItem {...menuRow(state)} useSessionAccess={useSessionAccess} requestSessionRename={vi.fn()} />,
-    )
-    expect(view.container.innerHTML).toBe('')
-    expect(useSessionAccess).toHaveBeenCalledWith(sid('one'), 'session/rename')
-  })
-
-  it('rename closes the menu, then asks for the dialog with the row title', () => {
-    const { state, setMenuOpen } = openMenu()
-    const requestSessionRename = vi.fn()
-    render(<RenameSessionMenuItem {...menuRow(state)} requestSessionRename={requestSessionRename} />)
-    fireEvent.click(screen.getByRole('menuitem', { name: '重命名' }))
-    expect(requestSessionRename).toHaveBeenCalledWith(sid('one'), 'Session title')
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(requestSessionRename))
   })
 })
 
@@ -652,19 +518,26 @@ describe('RowActionToast', () => {
     expect(document.body.textContent).toBe('')
   })
 
+  it('says an archived Session has to be unarchived before it can be deleted', async () => {
+    const { notify } = await toastSurface()
+    notify({ kind: 'archivedNotDeletable' })
+    expect(screen.getByRole('alert').textContent).toBe('已归档的会话无法直接删除，请先取消归档')
+  })
+
+  it('confirms a deletion with no recovery action', async () => {
+    const { notify } = await toastSurface()
+    notify({ kind: 'deleted' })
+    expect(screen.getByRole('alert').textContent).toBe('会话已删除')
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
   it.each([
     ['zh', t, '请先打开原会话完成迁移，再创建分支', '打开原会话'],
     ['en', tEn, 'Open the original session to complete migration before creating a branch.', 'Open original session'],
   ] as const)('keeps the %s fork notice after menu unmount and opens only on its action', async (_locale, translate, message, action) => {
     const { dismissToast, openForkSource, notify } = await toastSurface(undefined, translate)
-    const { state, setMenuOpen } = openMenu()
     const forkSession = vi.fn((sessionId: SessionId) => { notify({ kind: 'forkRequiresOpen', sessionId }) })
-    const menu = render(<ForkSessionMenuItem {...menuRow(state)} t={translate} forkSession={forkSession} />)
-
-    fireEvent.click(screen.getByRole('menuitem', { name: translate('menu.fork') }))
-    expect(setMenuOpen).toHaveBeenCalledWith(false)
-    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(forkSession))
-    menu.unmount()
+    forkSession(ROW.sessionId)
 
     expect(screen.queryByRole('menuitem')).toBeNull()
     expect(screen.getByRole('alert').textContent).toContain(message)
@@ -835,32 +708,187 @@ describe('RowActionToast', () => {
   })
 })
 
-it('shows effective Session shortcuts while menu clicks keep the row target', () => {
-  const shortcuts = new ShortcutRegistry('desktop', 'macos')
-  for (const [action, code] of [['rename', 'KeyR'], ['fork', 'KeyF'], ['archive', 'KeyA']] as const) {
-    shortcuts.register({ id: `session.${action}` as ShortcutCommandId, label: () => action, aliases: [],
-      defaults: {
-        'desktop:macos': { code, modifiers: ['primary', action === 'archive' ? 'shift' : 'alt'] },
-        'desktop:windows': { code, modifiers: ['primary', action === 'archive' ? 'shift' : 'alt'] },
-        'desktop:linux': { code, modifiers: ['primary', action === 'archive' ? 'shift' : 'alt'] },
-      },
-      regions: ['page'], modals: [], resolve: () => ({ status: 'pass' }) })
+/** Owner and injected seats for the standalone delete component. */
+function menuRow(menu: readonly [boolean, (open: boolean) => void]) {
+  return { ...ROW, useMenuOpenState: () => menu, useShortcuts: hook([]), t, ...standard }
+}
+
+/** Open menu with an observable dismissal callback. */
+function openMenu() {
+  const setMenuOpen = vi.fn()
+  const state: readonly [boolean, (open: boolean) => void] = [true, setMenuOpen]
+  return { state, setMenuOpen }
+}
+
+describe('delete action', () => {
+  it('menu row closes the menu, then asks for the deletion confirmation', () => {
+    const { state, setMenuOpen } = openMenu()
+    const requestDeleteSession = vi.fn()
+    render(<DeleteSessionMenuItem {...menuRow(state)} requestDeleteSession={requestDeleteSession} />)
+    const row = screen.getByRole('menuitem', { name: '删除会话' })
+    // Deletion is irreversible: the row is destructive and separated from archive.
+    expect(row.className).toMatch(/danger/)
+    fireEvent.click(row)
+    expect(requestDeleteSession).toHaveBeenCalledWith(ROW.sessionId, ROW.displayTitle)
+    expect(setMenuOpen).toHaveBeenCalledWith(false)
+    expect(callOrder(setMenuOpen)).toBeLessThan(callOrder(requestDeleteSession))
+  })
+
+  it('renders nothing when the Session access excludes deletion', () => {
+    const { state } = openMenu()
+    const { container } = render(
+      <DeleteSessionMenuItem
+        {...menuRow(state)}
+        useSessionAccess={() => false}
+        requestDeleteSession={vi.fn()}
+      />,
+    )
+    expect(container.textContent).toBe('')
+  })
+
+  it('never deletes on the click alone: refusal and confirmation live behind the injected callback', () => {
+    const { state } = openMenu()
+    const requestDeleteSession = vi.fn()
+    render(<DeleteSessionMenuItem {...menuRow(state)} requestDeleteSession={requestDeleteSession} />)
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除会话' }))
+    expect(requestDeleteSession).toHaveBeenCalledOnce()
+  })
+})
+
+describe('SessionDeleteConfirmDialog', () => {
+  /** Whether the one button carrying `label` is currently disabled (no jest-dom here). */
+  function buttonDisabled(label: string): boolean {
+    return screen.getByRole<HTMLButtonElement>('button', { name: label }).disabled
   }
-  const requestSessionRename = vi.fn()
-  const forkSession = vi.fn()
-  const archiveSession = vi.fn()
-  const props = { ...menuRow([true, vi.fn()]), useShortcuts: hook(shortcuts.catalog.getSnapshot()) }
-  render(<>
-    <RenameSessionMenuItem {...props} requestSessionRename={requestSessionRename} />
-    <ForkSessionMenuItem {...props} forkSession={forkSession} />
-    <ArchiveSessionMenuItem {...props} useArchived={hook(idSet())} archiveSession={archiveSession} unarchiveSession={vi.fn()} />
-  </>)
-  expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('aria-keyshortcuts')))
-    .toEqual(['Alt+Meta+R', 'Alt+Meta+F', 'Shift+Meta+A'])
-  fireEvent.click(screen.getByRole('menuitem', { name: '重命名' }))
-  fireEvent.click(screen.getByRole('menuitem', { name: '分叉会话' }))
-  fireEvent.click(screen.getByRole('menuitem', { name: '归档会话' }))
-  expect(requestSessionRename).toHaveBeenCalledWith(ROW.sessionId, ROW.displayTitle)
-  expect(forkSession).toHaveBeenCalledWith(ROW.sessionId)
-  expect(archiveSession).toHaveBeenCalledWith(ROW.sessionId)
+
+  /** The dialog over a test-owned request source; settling clears the request the way apply does. */
+  function deleteDialog(
+    confirmSessionDelete: SessionDeleteConfirmInjected['confirmSessionDelete'],
+    loadSessionActivity: SessionDeleteConfirmInjected['loadSessionActivity'] = async () => [],
+    translate = t,
+  ) {
+    const request = createSnapshotStore<SessionDeleteConfirmRequest | null>(null)
+    const settleSessionDelete = vi.fn(() => { request.set(null) })
+    const view = render(
+      <SessionDeleteConfirmDialog
+        {...overlay}
+        t={translate}
+        useDeleteRequest={bindSnapshotSelector(request)}
+        settleSessionDelete={settleSessionDelete}
+        loadSessionActivity={loadSessionActivity}
+        confirmSessionDelete={confirmSessionDelete}
+      />,
+    )
+    const ask = (): void => {
+      act(() => { request.set({ sessionId: sid('one'), displayTitle: 'Doomed session' }) })
+    }
+    return { settleSessionDelete, ask, unmount: view.unmount }
+  }
+
+  it('renders nothing until a confirmation is requested', () => {
+    deleteDialog(vi.fn(async () => {}))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('states the irreversibility and deletes without stopping anything for an idle Session', async () => {
+    const confirmSessionDelete = vi.fn<SessionDeleteConfirmInjected['confirmSessionDelete']>(async () => {})
+    const { settleSessionDelete, ask } = deleteDialog(confirmSessionDelete)
+    ask()
+    const dialog = screen.getByRole('dialog', { name: '删除此会话？' })
+    expect(dialog.textContent).toContain('将永久删除“Doomed session”及其本地会话记录，此操作无法撤销。')
+    // Confirming waits for the activity read, so the dialog cannot claim a
+    // Session is idle before the Host has answered.
+    await waitFor(() => { expect(buttonDisabled('删除会话')).toBe(false) })
+    // An idle Session shows no work list and offers the plain action.
+    expect(screen.queryByRole('list')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '删除会话' }))
+    await waitFor(() => { expect(settleSessionDelete).toHaveBeenCalledOnce() })
+    expect(confirmSessionDelete).toHaveBeenCalledWith(sid('one'), { stopActivity: false })
+  })
+
+  it('lists the reported work and stops it first when the Session is running', async () => {
+    const confirmSessionDelete = vi.fn<SessionDeleteConfirmInjected['confirmSessionDelete']>(async () => {})
+    const { settleSessionDelete, ask } = deleteDialog(
+      confirmSessionDelete,
+      async () => [
+        { kind: 'turn' },
+        { kind: 'job', items: [{ id: 'bash-1', label: 'pnpm run build' }] },
+      ],
+    )
+    ask()
+    await waitFor(() => { expect(screen.getByRole('list', { name: '将被停止的工作' })).toBeTruthy() })
+    const lines = [...screen.getByRole('list', { name: '将被停止的工作' }).querySelectorAll('li')].map(li => li.textContent)
+    expect(lines).toEqual(['进行中的回合', '1 个后台任务：pnpm run build'])
+    fireEvent.click(screen.getByRole('button', { name: '停止并删除' }))
+    await waitFor(() => { expect(settleSessionDelete).toHaveBeenCalledOnce() })
+    expect(confirmSessionDelete).toHaveBeenCalledWith(sid('one'), { stopActivity: true })
+  })
+
+  it('falls back to the plain confirmation when the activity read fails', async () => {
+    const confirmSessionDelete = vi.fn<SessionDeleteConfirmInjected['confirmSessionDelete']>(async () => {})
+    const { ask } = deleteDialog(confirmSessionDelete, async () => { throw new Error('activity backend down') })
+    ask()
+    // A failed activity read is not a failed deletion: confirming waits for the
+    // read to settle and then offers the plain action.
+    await waitFor(() => { expect(buttonDisabled('删除会话')).toBe(false) })
+    expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  it('keeps the dialog open with a rejection surfaced, and Cancel settles without deleting', async () => {
+    const confirmSessionDelete = vi.fn<SessionDeleteConfirmInjected['confirmSessionDelete']>()
+      .mockRejectedValueOnce(new Error('remove exploded'))
+    const { settleSessionDelete, ask } = deleteDialog(confirmSessionDelete)
+    ask()
+    fireEvent.click(await screen.findByRole('button', { name: '删除会话' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('remove exploded') })
+    expect(settleSessionDelete).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '取消' }))
+    expect(settleSessionDelete).toHaveBeenCalledOnce()
+  })
+
+  it('drops a late activity read on both arms once the dialog has unmounted', async () => {
+    // A read that answers after the dialog is gone must not set state: the
+    // success arm and the failure arm share the same liveness guard.
+    let settleActivity: ((value: readonly SessionActivity[]) => void) | undefined
+    const pending = new Promise<readonly SessionActivity[]>((resolve) => { settleActivity = resolve })
+    const answered = deleteDialog(vi.fn(async () => {}), () => pending)
+    answered.ask()
+    answered.unmount()
+    settleActivity?.([])
+    await act(async () => { await pending })
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    let failActivity: ((reason: unknown) => void) | undefined
+    const failing = new Promise<readonly SessionActivity[]>((_, reject) => { failActivity = reject })
+    const failed = deleteDialog(vi.fn(async () => {}), () => failing)
+    failed.ask()
+    failed.unmount()
+    failActivity?.(new Error('late failure'))
+    await act(async () => { await failing.catch(() => undefined) })
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('ignores Cancel while the deletion is in flight', async () => {
+    let finish: (() => void) | undefined
+    const inFlight = new Promise<void>((resolve) => { finish = resolve })
+    const confirmSessionDelete = vi.fn(() => inFlight)
+    const { settleSessionDelete, ask } = deleteDialog(confirmSessionDelete)
+    ask()
+    fireEvent.click(await screen.findByRole('button', { name: '删除会话' }))
+    // The dialog is busy: closing it must not settle the request out from
+    // under the removal that is already running.
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    expect(settleSessionDelete).not.toHaveBeenCalled()
+    await act(async () => { finish?.() })
+    await waitFor(() => { expect(settleSessionDelete).toHaveBeenCalledOnce() })
+  })
+
+  it('renders a non-Error rejection by its string form', async () => {
+    const confirmSessionDelete = vi.fn<SessionDeleteConfirmInjected['confirmSessionDelete']>()
+      .mockRejectedValueOnce('plain refusal')
+    const { ask } = deleteDialog(confirmSessionDelete)
+    ask()
+    fireEvent.click(await screen.findByRole('button', { name: '删除会话' }))
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe('plain refusal') })
+  })
 })

@@ -8,7 +8,7 @@ import type {
 import { SessionCreateError } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SubagentAddress } from '@deepseek-ai/dsh-subagent/client'
 import type {
-  IWorkspaces, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
+  IWorkspaces, SessionActivity, WorkspaceId, WorkspaceSnapshot, WorkspaceView,
 } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { ClientRemote, DirectoryListing } from '@deepseek-ai/dsh-api-remotes/client'
 import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
@@ -17,7 +17,7 @@ import { SessionId } from '@deepseek-ai/dsh-session/types'
 import { LayoutController } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
-import type { DraftInitializationOptions, SessionInputResolver } from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type { DraftInitializationOptions, InputState, SessionInputResolver } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { RowToast } from '../src/client/contract/slots.ts'
 import { DirectoryBrowseError, UiWorkspaceService } from '../src/client/navigation.ts'
 import { en, zh } from '../src/client/locales.ts'
@@ -159,12 +159,20 @@ class FakeSessions implements ISessions {
   readonly binding = vi.fn<ISessions['binding']>(sessionId =>
     this.retained.findLast(item => item.reference.sessionId === sessionId
       && item.release.mock.calls.length === 0)?.reference.binding)
+  /** Deletion calls, newest last; replace the property to make it fail. */
+  readonly deleteCalls: Array<[SessionId, { readonly stopActivity?: boolean }]> = []
+  delete: ISessions['delete'] = (sessionId, options = {}) => {
+    this.deleteCalls.push([sessionId, options])
+    return Promise.resolve()
+  }
+
   declare readonly using: ISessions['using']
   declare readonly retainInfo: ISessions['retainInfo']
   declare readonly searchResultLimit: ISessions['searchResultLimit']
   declare readonly refresh: ISessions['refresh']
   declare readonly search: ISessions['search']
-  declare readonly scope: ISessions['scope']
+  /** Session-scope resolution; cases override it to withhold the composer scope. */
+  scope: ISessions['scope'] = () => ({} as never)
   declare readonly scopeOf: ISessions['scopeOf']
   declare readonly sessionOf: ISessions['sessionOf']
 
@@ -234,6 +242,10 @@ class FakeWorkspaces implements IWorkspaces {
       pinnedSessionIds: state.pinnedSessionIds.filter(id => id !== sessionId),
     }))
   }
+
+  async sessionActivity(): Promise<readonly SessionActivity[]> {
+    return []
+  }
 }
 
 const listing: DirectoryListing = {
@@ -272,6 +284,8 @@ class FakeDirectoryPicker {
 
 interface BenchOptions {
   readonly conversation?: boolean
+  /** Composer content for every session; omit for an empty composer. */
+  readonly input?: Partial<InputState>
   readonly configureWorkspaces?: (workspaces: FakeWorkspaces) => void
   readonly workspaces?: WorkspaceSnapshot
   readonly sessions?: SessionListState
@@ -286,7 +300,14 @@ function bench(options: BenchOptions = {}) {
   ctx.effect(() => locale.register('workspace', { en, zh }))
   ctx.provide('locale', locale)
   const requestDraftInitialization = vi.fn<SessionInputResolver['requestDraftInitialization']>(() => 'applied')
-  if (options.conversation !== false) ctx.provide('conversation', { input: { requestDraftInitialization } })
+  const inputState: InputState = {
+    draft: '', attachmentIds: [], draftRev: 0, phase: 'plain', occurrences: [], queue: [],
+    ...options.input,
+  }
+  const inputFor = vi.fn(() => ({ state: { getSnapshot: () => inputState } }))
+  if (options.conversation !== false) {
+    ctx.provide('conversation', { input: { requestDraftInitialization, for: inputFor } })
+  }
   const layout = new LayoutController({
     selectPanel: vi.fn(), retainMainPanels: vi.fn(),
     setSidebar: vi.fn(), toggleSidebar: vi.fn(), setViewportWidth: vi.fn(),
@@ -310,7 +331,10 @@ function bench(options: BenchOptions = {}) {
     view.actions,
     notify,
   )
-  return { ctx, directoryPicker, sessions, uiWorkspace, workspaces, layout, selectPanel, view, notify, requestDraftInitialization }
+  return {
+    ctx, directoryPicker, sessions, uiWorkspace, workspaces, layout, selectPanel, view, notify,
+    requestDraftInitialization, inputFor,
+  }
 }
 
 function lastOpening(open: MockInstance<UiWorkspaceService['openWorkspace']>): Promise<void> {
@@ -450,6 +474,20 @@ describe('UiWorkspaceService', () => {
     expect(b.sessions.retained.map(item => item.reference.sessionId)).toEqual([sid('current'), sid('created-a')])
     expect(b.sessions.retained[0]!.release).not.toHaveBeenCalled()
     expect(b.sessions.retained[1]!.release).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['an empty composer', {}],
+    ['a draft', { draft: 'keep me' }],
+    ['staged attachments', { attachmentIds: ['attachment-1' as never] }],
+    ['a queued message', { queue: [{} as never] }],
+    ['an in-flight submission', { phase: 'submitting' }],
+  ] satisfies readonly [string, Partial<InputState>][])('preserves a reusable blank with %s across navigation', async (_label, input) => {
+    const b = bench({ input, sessions: sessionState([summary('blank', { blank: true }), summary('other')], 'pending') })
+    b.uiWorkspace.openSession(sid('blank'))
+    b.uiWorkspace.openSession(sid('other'))
+    await Promise.resolve()
+    expect(b.sessions.deleteCalls).toEqual([])
   })
 
   it('opens only the latest Workspace when creation finishes out of order', async () => {
@@ -1523,6 +1561,25 @@ describe('UiWorkspaceService', () => {
     b.workspaces.onArchive = () => Promise.reject(new Error('archive rejected'))
     await expect(b.uiWorkspace.archiveSession(idle)).rejects.toThrow('archive rejected')
     expect(b.workspaces.archiveCalls).toEqual([idle, idle])
+  })
+
+  it('deletes through the Session service and returns the main view to its Workspace', async () => {
+    const b = bench()
+    b.uiWorkspace.openSession(sid('current'))
+
+    await b.uiWorkspace.deleteSession(sid('current'), { stopActivity: true })
+    expect(b.sessions.deleteCalls).toEqual([[sid('current'), { stopActivity: true }]])
+    // The removed conversation cannot stay selected: its row is gone.
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+
+    // A Session that is not the main selection leaves the selection alone.
+    b.uiWorkspace.openSession(sid('current'))
+    await b.uiWorkspace.deleteSession(sid('idle'))
+    expect(b.sessions.deleteCalls).toHaveLength(2)
+    expect(b.sessions.retained[1]!.release).not.toHaveBeenCalled()
+
+    b.sessions.delete = () => Promise.reject(new Error('delete rejected'))
+    await expect(b.uiWorkspace.deleteSession(sid('idle'))).rejects.toThrow('delete rejected')
   })
 
   it('forwards unarchive commands and preserves failures', async () => {

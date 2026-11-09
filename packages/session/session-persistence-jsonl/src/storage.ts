@@ -109,6 +109,25 @@ export class JsonlSessionHandle implements SessionHandle {
   }
 
   /**
+   * Whether {@link close} has begun. A closing handle may still be draining
+   * its routed buffer through the open artifact, so its stored files are not
+   * safe to remove yet — but they will be, once `close` settles.
+   * @returns true once this handle's close started.
+   */
+  isClosing(): boolean {
+    return this.closing !== undefined
+  }
+
+  /**
+   * Settle when this handle's close has finished; immediate for an open
+   * handle, which still owns its session's files.
+   * @returns settlement of this handle's close, or an already-settled promise.
+   */
+  awaitClosed(): Promise<void> {
+    return this.closing ?? Promise.resolve()
+  }
+
+  /**
    * Read a slice of the valid contiguous logical log; see the seam contract.
    * @param offset - first logical seq to include (default 0).
    * @param length - maximum events returned (default: the rest).
@@ -446,6 +465,17 @@ export class JsonlBackendTracker {
    */
   pendingOf(id: SessionId): PendingSession | undefined {
     return this.pending.get(id)
+  }
+
+  /**
+   * This session's write claim, if any — the guard against removing files the
+   * live write path could recreate.
+   * @param id - the session to look up.
+   * @returns `undefined` without a claim, `null` for a claim whose handle is
+   *   still being constructed, otherwise the session's write handle.
+   */
+  writerOf(id: SessionId): JsonlSessionHandle | null | undefined {
+    return this.writers.get(id)
   }
 
   /**

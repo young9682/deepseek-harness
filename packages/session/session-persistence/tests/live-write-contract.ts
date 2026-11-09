@@ -15,6 +15,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { appendPluginRecord, pluginRecordOf, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 import type { SessionPersistence } from '../src/index.ts'
+import { SessionPersistenceNotFoundError } from '../src/index.ts'
 
 declare module '@deepseek-ai/dsh-session/types' {
   interface PluginRecordMap {
@@ -194,6 +195,36 @@ export function runLiveWritePathContract(
       await vi.waitFor(async () => {
         expect((await readAll(ctx.sessionPersistence, SessionId('disposed-drains'))).map(event => event.seq)).toEqual([0])
       })
+      await expect(handle.append([])).rejects.toThrow(/closed handle/)
+      await ctx.fiber.dispose()
+    })
+
+    it('delete after session/disposed waits out the closing write handle instead of refusing', async () => {
+      const { ctx } = await make()
+      let session: ReturnType<Context['sessions']['create']> | undefined
+      const owner = await ctx.plugin(Object.assign((inner: Context) => {
+        session = inner.sessions.create(SessionId('deleted-after-disposal'))
+      }, { inject: ['sessions'] }))
+      if (session === undefined) throw new Error('session was not created')
+      const handle = await ctx.sessionPersistence.create(session.header)
+      session.append('turn/start', { turn: 1 })
+      await ctx.sessions.flush(session)
+      expect((await readAll(ctx.sessionPersistence, session.id)).map(event => event.seq)).toEqual([0])
+
+      // Disposal fires `session/disposed`, whose listener starts the final
+      // drain and closes the write handle WITHOUT awaiting it. Deletion must
+      // wait that close out rather than refuse the id as active.
+      await owner.dispose()
+      await expect(ctx.sessionPersistence.delete(session.id)).resolves.toBeUndefined()
+      await expect(ctx.sessionPersistence.stat(session.id)).resolves.toBeUndefined()
+      await expect(ctx.sessionPersistence.list()).resolves.toSatisfy(
+        (snapshots: readonly { readonly header: { readonly id: string } }[]) =>
+          !snapshots.some(entry => entry.header.id === session?.id),
+      )
+      await expect(ctx.sessionPersistence.open(session.id, 'read'))
+        .rejects.toBeInstanceOf(SessionPersistenceNotFoundError)
+
+      // The closed handle stays closed through the removal.
       await expect(handle.append([])).rejects.toThrow(/closed handle/)
       await ctx.fiber.dispose()
     })

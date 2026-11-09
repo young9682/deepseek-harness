@@ -48,11 +48,13 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
 
 /**
  * Register navigation commands against the existing workspace owner.
- * Rename requires a nonblank main Conversation with no modal obscuring it.
+ * Rename requires a nonblank main Conversation with no modal other than the navigation drawer obscuring it.
  * @param ctx - plugin context with the shortcut, locale, and model services.
  * @param navigation - session creation and forking from the pointer controls' navigation service.
  * @param controls - browser-owned opening requests.
  * @param archiveSession - shared archive action, including running-work confirmation and notices.
+ * @param deleteSession - shared delete action: it raises the confirmation
+ *   dialog, or the archived notice when that row cannot be deleted.
  * @param reportForkFailure - publish a classified failure through the frame-wide notice channel.
  */
 export function installWorkspaceShortcuts(
@@ -60,6 +62,7 @@ export function installWorkspaceShortcuts(
   navigation: Pick<UiWorkspace, 'startSession' | 'forkSession'>,
   controls: ReturnType<typeof createWorkspaceShortcutControls>,
   archiveSession: (sessionId: SessionId) => void,
+  deleteSession: (sessionId: SessionId, displayTitle: string) => void,
   reportForkFailure: (reason: 'unavailable' | 'failed') => void,
 ): void {
   const t = ctx.locale.bind('workspace')
@@ -75,7 +78,7 @@ export function installWorkspaceShortcuts(
         'desktop:macos': { code, modifiers }, 'desktop:windows': { code, modifiers }, 'desktop:linux': { code, modifiers },
         'web:macos': { code, modifiers: webModifiers }, 'web:windows': { code, modifiers: webModifiers },
       },
-      regions: ['page', 'editable'], modals: [], resolve,
+      regions: ['page', 'editable'], modals: ['sidebar'], resolve,
     }), `ui-workspace: ${id}`)
   }
   register('session.new', () => t('session.new'), ['new session', 'new chat'], 'KeyN', ['primary'], ['primary', 'alt'],
@@ -89,7 +92,7 @@ export function installWorkspaceShortcuts(
     })
   register('session.rename', () => t('rename.session.title'), ['rename session'], 'KeyG', ['primary', 'alt'], ['primary', 'alt'], (context) => {
     const target = current()
-    return target === undefined || target.blank || context.modal !== null || ctx.layout.panelInfo.getSnapshot().activePanelId !== null
+    return target === undefined || target.blank || (context.modal !== null && context.modal !== 'sidebar') || ctx.layout.panelInfo.getSnapshot().activePanelId !== null
       ? { status: 'blocked', reason: t('shortcut.noSession') }
       : { status: 'handled', run: () => { controls.rename(target.id, target.title?.trim() ?? '') } }
   })
@@ -113,6 +116,15 @@ export function installWorkspaceShortcuts(
     return target === undefined ? { status: 'blocked', reason: t('shortcut.noSession') }
       : { status: 'handled', run: () => {
         archiveSession(target.id)
+      } }
+  })
+  // Irreversible, so it raises the same confirmation the row menu does rather
+  // than deleting on the keystroke. An archived target diverts to the notice.
+  register('session.delete', () => t('menu.deleteSession'), ['delete session'], 'KeyD', ['primary', 'shift'], ['primary', 'alt'], () => {
+    const target = current()
+    return target === undefined ? { status: 'blocked', reason: t('shortcut.noSession') }
+      : { status: 'handled', run: () => {
+        deleteSession(target.id, target.displayTitle)
       } }
   })
 }

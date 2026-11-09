@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { DetailFailure } from '@deepseek-ai/dsh-plugin-detail'
@@ -149,12 +149,28 @@ it('reports an unreachable host as a network failure, a failed local command as 
   await expect(broken).rejects.toThrow('git update-ref')
   await expect(broken).rejects.not.toBeInstanceOf(DetailFailure)
   expect(readdirSync(join(root, 'cache'))).toEqual([])
-  // Git that cannot answer `git --version` within the deadline cannot run.
   const other = repository('t2', { 'README.md': 'x' })
-  await expectRejection(cache({ timeoutMs: 1 }).read(other.url, other.commit, 'README.md', 100, signal), { reason: 'git-unavailable' }, 'timed out')
   vi.stubEnv('PATH', join(root, 'no-git'))
   const missing = cache().read(other.url, other.commit, 'README.md', 100, signal)
   await expectRejection(missing, { reason: 'git-unavailable' }, 'git --version')
+  expect(readdirSync(join(root, 'cache'))).toEqual([])
+})
+
+it('reports a Git version probe that times out as unavailable', async () => {
+  const source = repository('slow', { 'README.md': 'x' })
+  // A deliberately blocked Git always times out during the version probe, even on a fast host.
+  const slowGit = join(root, 'slow-git')
+  mkdirSync(slowGit)
+  writeFileSync(join(slowGit, process.platform === 'win32' ? 'git.cmd' : 'git'), process.platform === 'win32'
+    ? '@echo off\r\n:wait\r\ngoto wait\r\n'
+    : '#!/bin/sh\nwhile :; do :; done\n', { mode: 0o755 })
+  const originalPath = process.env.PATH
+  vi.stubEnv('PATH', `${slowGit}${delimiter}${originalPath ?? ''}`)
+  try {
+    await expectRejection(cache({ timeoutMs: 1 }).read(source.url, source.commit, 'README.md', 100, signal), { reason: 'git-unavailable' }, 'timed out')
+  } finally {
+    vi.stubEnv('PATH', originalPath)
+  }
   expect(readdirSync(join(root, 'cache'))).toEqual([])
 })
 
