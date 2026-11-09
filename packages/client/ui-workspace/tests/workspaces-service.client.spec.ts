@@ -476,159 +476,18 @@ describe('UiWorkspaceService', () => {
     expect(b.sessions.retained[1]!.release).toHaveBeenCalledOnce()
   })
 
-  describe('abandoned blank cleanup', () => {
-    const blankRow = (id: string, overrides: Partial<SessionSummary> = {}): SessionSummary =>
-      summary(id, { blank: true, retainedBy: { mainView: 1 }, ...overrides })
-
-    function leave(b: ReturnType<typeof bench>, from = 'blank', to = 'other'): void {
-      b.uiWorkspace.openSession(sid(from))
-      b.uiWorkspace.openSession(sid(to))
-    }
-
-    it('deletes a blank Session the main view leaves with an empty composer', async () => {
-      const b = bench({ sessions: sessionState([blankRow('blank'), summary('other')], 'pending') })
-      leave(b)
-      await vi.waitFor(() => {
-        expect(b.sessions.deleteCalls).toEqual([[sid('blank'), {}]])
-      })
-    })
-
-    const composerContent: readonly [string, Partial<InputState>][] = [
-      ['a draft', { draft: 'keep me' }],
-      ['staged attachments', { attachmentIds: ['attachment-1' as never] }],
-      ['a queued message', { queue: [{} as never] }],
-      ['an in-flight submission', { phase: 'submitting' }],
-    ]
-    it.each(composerContent)('keeps a blank Session holding %s', async (_label, input) => {
-      const b = bench({ input, sessions: sessionState([blankRow('blank'), summary('other')], 'pending') })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps a blank whose prompt was logged before its turn started', async () => {
-      const b = bench({
-        sessions: sessionState([
-          blankRow('blank', {
-            projectionValues: { sessionListMetadata: { blank: true, lastPromptAt: 1_700_000_000_000 } },
-          }),
-          summary('other'),
-        ], 'pending'),
-      })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps a Session that has started a turn', async () => {
-      const b = bench({
-        sessions: sessionState([summary('blank', { retainedBy: { mainView: 1 } }), summary('other')], 'pending'),
-      })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps an archived blank', async () => {
-      const b = bench({
-        workspaces: workspaceState([], [sid('blank')]),
-        sessions: sessionState([blankRow('blank'), summary('other')], 'pending'),
-      })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('discards a blank whose only extra reference mirrors the main view', async () => {
-      const b = bench({
-        sessions: sessionState([
-          blankRow('blank', { retainedBy: { mainView: 1, sidebarView: 1 } }), summary('other'),
-        ], 'pending'),
-      })
-      leave(b)
-      await vi.waitFor(() => {
-        expect(b.sessions.deleteCalls).toEqual([[sid('blank'), {}]])
-      })
-    })
-
-    it('keeps a blank another source still retains', async () => {
-      const b = bench({
-        sessions: sessionState([
-          blankRow('blank', { retainedBy: { mainView: 1, gateway: 1 } }), summary('other'),
-        ], 'pending'),
-      })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps a blank missing from the catalog', async () => {
-      const b = bench({ sessions: sessionState([summary('other')], 'pending') })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps the same blank when navigation reopens it', async () => {
-      const b = bench({ sessions: sessionState([blankRow('blank')], 'pending') })
-      b.uiWorkspace.openSession(sid('blank'))
-      b.uiWorkspace.openSession(sid('blank'))
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps the blank when the conversation service is absent', async () => {
-      const b = bench({
-        conversation: false,
-        sessions: sessionState([blankRow('blank'), summary('other')], 'pending'),
-      })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps the blank when its Session scope is unavailable', async () => {
-      const b = bench({ sessions: sessionState([blankRow('blank'), summary('other')], 'pending') })
-      b.sessions.scope = () => undefined
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('keeps the blank when the composer facade refuses the scope', async () => {
-      const b = bench({ sessions: sessionState([blankRow('blank'), summary('other')], 'pending') })
-      b.inputFor.mockImplementationOnce(() => { throw new Error('not retained') })
-      leave(b)
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([])
-    })
-
-    it('reports a failed cleanup without failing navigation', async () => {
-      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-      const b = bench({ sessions: sessionState([blankRow('blank'), summary('other')], 'pending') })
-      b.sessions.delete = () => Promise.reject(new Error('gone'))
-      leave(b)
-      await vi.waitFor(() => {
-        expect(warn).toHaveBeenCalledWith('abandoned Session cleanup failed:', expect.any(Error))
-      })
-    })
-
-    it('does not delete again after an explicit Session deletion', async () => {
-      const b = bench({ sessions: sessionState([blankRow('blank')], 'pending') })
-      b.uiWorkspace.openSession(sid('blank'))
-      await b.uiWorkspace.deleteSession(sid('blank'))
-      await Promise.resolve()
-      expect(b.sessions.deleteCalls).toEqual([[sid('blank'), {}]])
-    })
-
-    it('discards the blank when Start Session has no Workspace to open', async () => {
-      const b = bench({ sessions: sessionState([blankRow('blank')], 'pending') })
-      b.uiWorkspace.openSession(sid('blank'))
-      b.uiWorkspace.startSession()
-      await vi.waitFor(() => {
-        expect(b.sessions.deleteCalls).toEqual([[sid('blank'), {}]])
-      })
-    })
+  it.each([
+    ['an empty composer', {}],
+    ['a draft', { draft: 'keep me' }],
+    ['staged attachments', { attachmentIds: ['attachment-1' as never] }],
+    ['a queued message', { queue: [{} as never] }],
+    ['an in-flight submission', { phase: 'submitting' }],
+  ] satisfies readonly [string, Partial<InputState>][])('preserves a reusable blank with %s across navigation', async (_label, input) => {
+    const b = bench({ input, sessions: sessionState([summary('blank', { blank: true }), summary('other')], 'pending') })
+    b.uiWorkspace.openSession(sid('blank'))
+    b.uiWorkspace.openSession(sid('other'))
+    await Promise.resolve()
+    expect(b.sessions.deleteCalls).toEqual([])
   })
 
   it('opens only the latest Workspace when creation finishes out of order', async () => {
