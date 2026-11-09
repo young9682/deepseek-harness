@@ -71,5 +71,4 @@ export function registerSessionMenus(ctx: Context, actions: Actions): void {
     danger: true, separatorBefore: true, afterContent: true, commandId: 'session.delete' as ShortcutCommandId,
     run: () => { actions.requestDeleteSession(target.sessionId, target.displayTitle) },
   }] : [])
-
 }
