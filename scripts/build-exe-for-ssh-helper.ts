@@ -37,10 +37,40 @@ async function run(command: string, args: string[]): Promise<void> {
 
 async function pnpm(...args: string[]): Promise<void> { const [command, argv] = pnpmInvocation(args); await run(command, argv) }
 
+/**
+ * Collect the deploy closure: the runtime package plus every workspace package
+ * reachable from it through `workspace:`/`link:` dependency edges. Deploy ships
+ * each workspace member's built `lib` output, so skipping a nested member
+ * leaves the packaged runtime unable to resolve its own imports.
+ * @param direct - The closure package's declared dependencies.
+ * @returns Package names to compile, including the closure package itself.
+ */
+async function runtimeClosureNames(direct: Readonly<Record<string, string>>): Promise<Set<string>> {
+  const directories = new Map<string, string>()
+  for (const path of globSync(['packages/*/*/package.json', 'vendor/*/package.json'], { cwd: root }).sort()) {
+    directories.set((await manifest(join(root, path))).name, dirname(join(root, path)))
+  }
+  const names = new Set([closureName])
+  const pending = [closureName, ...Object.keys(direct)]
+  while (pending.length > 0) {
+    const name = pending.pop()
+    if (name === undefined) continue
+    if (names.has(name)) continue
+    names.add(name)
+    const directory = directories.get(name)
+    if (directory === undefined) continue
+    const { dependencies = {} } = await manifest(join(directory, 'package.json'))
+    for (const [dependency, specifier] of Object.entries(dependencies)) {
+      if (specifier.startsWith('workspace:') || specifier.startsWith('link:')) pending.push(dependency)
+    }
+  }
+  return names
+}
+
 async function compileRuntime(dependencies: Readonly<Record<string, string>>): Promise<void> {
   await pnpm('exec', 'tsx', 'native/system/scripts/build.ts')
   await pnpm('exec', 'tsc', '-b', closureDirectory, 'native/system/packages/entry')
-  const names = new Set([closureName, ...Object.keys(dependencies)])
+  const names = await runtimeClosureNames(dependencies)
   for (const path of globSync(['packages/*/*/package.json', 'vendor/*/package.json'], { cwd: root }).sort()) {
     if (!names.has((await manifest(join(root, path))).name)) continue
     const cwd = dirname(join(root, path))
