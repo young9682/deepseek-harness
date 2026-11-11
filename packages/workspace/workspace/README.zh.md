@@ -103,7 +103,9 @@ Workspace 注册不意味着拥有其目录。未来的破坏性文件系统操�
 
 `isArchived(sessionId)` 在不暴露集合的前提下回答归档问题，因此需要按归档状态分支的调用方——例如拒绝已归档行的删除——不必自己持有归档集合。`sessionActivity(sessionId)` 只询问活动 waterfall 而不对答案采取动作，使破坏性确认框能在用户确认前列出它将要停止的工作。`forgetSession(sessionId)` 丢弃注册表中对某个存储日志已被调用方移除的会话的全部引用：它的归档条目、置顶、在每个工作区中的记账槽位，以及本注册表据以回答 `sessionKnown` 与成员资格的那个已索引头部。它不做存在性检查（移除 id 不可能引入未知 id，故本注册表从未见过的 id 直接 resolve 而不写入），且幂等。
 
-归档准入是本包声明并派发的两个宿主事件之上的能力接缝：`workspace/session-activity`（waterfall）向已组合的提供方询问某会话还有什么在跑，`workspace/session-stop`（parallel）请它们停止这些工作。`archiveSession(sessionId)` 只询问一次活动 waterfall，对非空答案以 `WorkspaceActiveSessionError` 拒绝，其 `activity` 按族列出各项——键由各提供方自己合并进本包留空的 `SessionActivityKindMap`；`archiveSession(sessionId, { stopActivity: true })` 跳过活动检查，先写入归档，再派发停止事件，因此持久化的归档集合已经拦住停止所引发的每一次唤醒；提供方抛错只记日志，归档保留。调用在每个提供方的停止请求都已发出后返回，被停止的工作自行收敛。两种询问都在存在性检查之后进行，对已归档 id 从不发生。随附的提供方是 Agent 注册表（运行中的回合）、任务注册表接缝（所属任务）、Subagent runtime（运行中的子孙）与 Schedule 插件（活跃提醒）；没有提供方的组合可自由归档。
+归档准入是本包声明并派发的两个宿主事件之上的能力接缝：`workspace/session-activity`（waterfall）向已组合的提供方询问某会话还有什么在跑，`workspace/session-stop`（parallel）请它们停止这些工作。`archiveSession(sessionId)` 只询问一次活动 waterfall，对非空答案以 `WorkspaceActiveSessionError` 拒绝，其 `activity` 按族列出各项——键由各提供方自己合并进本包留空的 `SessionActivityKindMap`；`archiveSession(sessionId, { stopActivity: true })` 跳过活动检查，先写入归档，再派发停止事件，因此持久化的归档集合已经拦住停止所引发的每一次唤醒；提供方抛错只记日志，归档保留。调用在停止请求与归档后续准入完成后返回，被停止的工作独立收敛。两种询问都在存在性检查之后进行，对已归档 id 从不发生。随附的提供方是 Agent 注册表（运行中的回合）、任务注册表接缝（所属任务）、Subagent runtime（运行中的子孙）与 Schedule 插件（活跃提醒）；没有提供方的组合可自由归档。
+
+`workspace/session-archived` 在归档持久化并发出停止请求后，接纳可选的后续工作。它在注册表的写队列内派发，因此监听器只登记工作并返回；工作本身及其所需的无界 I/O 在之后执行。提供方负责取消、失败报告和释放；准入失败会记录日志，但不撤销归档。`workspace/session-unarchiving` 让提供方在移除归档标记前取消或结束后续工作。注册表不包含 Git 清理策略。
 
 ### 源码地图
 
