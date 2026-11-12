@@ -1,0 +1,131 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gh-runner-entry
+  namespace: advisor-young86
+data:
+  phase1.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+    # Ubuntu and NodeSource mirrors are CN-direct reachable; routing their apt
+    # traffic through the campus proxy stalls connections mid-download.
+    export NO_PROXY="${NO_PROXY:+$NO_PROXY,}archive.ubuntu.com,security.ubuntu.com,deb.nodesource.com"
+    echo 'Acquire::Retries "6";' > /etc/apt/apt.conf.d/80retries
+    apt-get update -qq
+    apt-get install -y -qq curl ca-certificates sudo git build-essential python3 musl-tools apt-transport-https libicu-dev > /dev/null
+    curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource.sh
+    bash /tmp/nodesource.sh > /dev/null
+    apt-get install -y -qq nodejs > /dev/null
+    corepack enable > /dev/null 2>&1 || true
+    mkdir -p /runner /runner-work
+    cd /runner
+    curl -fsSL -o runner.tar.gz "https://github.com/actions/runner/releases/download/v2.338.2/actions-runner-linux-x64-2.338.2.tar.gz"
+    tar -xzf runner.tar.gz && rm -f runner.tar.gz
+    ./bin/installdependencies.sh > /dev/null 2>&1 || true
+    # The hosted image owns Playwright's Linux system packages; this runner
+    # installs them itself so the Web snapshot and e2e lanes can launch
+    # Chromium and WebKit.
+    npx -y playwright@1.61.1 install-deps chromium webkit > /dev/null
+    id -u runner > /dev/null 2>&1 || useradd -m -u 1001 -s /bin/bash runner
+    echo 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/runner
+    chmod 0440 /etc/sudoers.d/runner
+    chown -R runner:runner /runner /runner-work
+    install -o runner -g runner -m 0755 /entry/phase2.sh /runner/phase2.sh
+    # The runner binary refuses to run as root or under sudo; drop to the
+    # unprivileged runner user with a clean environment for phase two.
+    exec setpriv --reuid=1001 --regid=1001 --init-groups \
+      env HOME=/home/runner \
+      bash /runner/phase2.sh
+  phase2.sh: |
+    #!/bin/bash
+    set -euo pipefail
+    cd /runner
+    ./config.sh \
+      --url https://github.com/young9682/deepseek-harness \
+      --pat "$GH_PAT" \
+      --labels self-hosted,linux,X64,vm-backup,ubuntu-latest \
+      --work /runner-work \
+      --unattended --ephemeral --replace
+    exec ./run.sh
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gh-runner-pat
+  namespace: advisor-young86
+type: Opaque
+stringData:
+  token: "PLACEHOLDER_PAT"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gh-runner
+  namespace: advisor-young86
+  labels:
+    app: gh-runner
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: gh-runner
+  template:
+    metadata:
+      labels:
+        app: gh-runner
+    spec:
+      restartPolicy: Always
+      securityContext:
+        fsGroup: 1001
+      containers:
+        - name: runner
+          image: docker.io/library/ubuntu:24.04
+          # Privileged: the CI's bubblewrap sandbox mounts proc inside a user
+          # namespace, which the RHEL 10 node's container policy otherwise
+          # denies below anything a pod spec can change.
+          securityContext:
+            privileged: true
+          command: ["/bin/bash", "/entry/phase1.sh"]
+          env:
+            - name: GH_PAT
+              valueFrom:
+                secretKeyRef:
+                  name: gh-runner-pat
+                  key: token
+            - name: HTTPS_PROXY
+              value: http://10.100.1.111:10810
+            - name: HTTP_PROXY
+              value: http://10.100.1.111:10810
+            - name: NO_PROXY
+              value: localhost,127.0.0.1,.svc,.cluster.local,10.45.0.0/16,10.44.0.0/16,192.168.10.0/23,archive.ubuntu.com,security.ubuntu.com,deb.nodesource.com
+            - name: COREPACK_ENABLE_DOWNLOAD_PROMPT
+              value: "0"
+            - name: GITHUB_ACTIONS
+              value: "true"
+          resources:
+            requests:
+              cpu: "4"
+              memory: 8Gi
+            limits:
+              cpu: "8"
+              memory: 16Gi
+          volumeMounts:
+            - name: entry
+              mountPath: /entry
+            - name: runner-data
+              mountPath: /runner
+            - name: runner-work
+              mountPath: /runner-work
+          workingDir: /runner
+      volumes:
+        - name: entry
+          configMap:
+            name: gh-runner-entry
+            defaultMode: 0755
+        - name: runner-data
+          emptyDir: {}
+        - name: runner-work
+          emptyDir: {}
