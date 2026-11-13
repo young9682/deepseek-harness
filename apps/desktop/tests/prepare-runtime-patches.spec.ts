@@ -59,7 +59,9 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
   }))
   expect(() => { verifyRuntimePatches(project, plan) })
     .toThrow('workspace-only dependency entered the runtime: @botiverse/oar@0.67.0')
-})
+// The fixture runs real git and pnpm against the repository copy; under the
+// coverage instrument those steps exceed the default 5-second budget.
+}, 30000)
 
 it('does not infer version overrides from selected patches', () => {
   const { source, project } = fixture()

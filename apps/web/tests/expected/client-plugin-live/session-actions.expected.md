@@ -10,3 +10,5 @@
   - menuitem "Copy session ID"
   - separator
   - menuitem "Archive session"
+  - separator
+  - menuitem "Delete session"
