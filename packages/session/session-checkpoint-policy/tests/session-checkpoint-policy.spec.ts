@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import Loader from '@deepseek-ai/cordis-plugin-loader'
 import { agentEvents, type Agent } from '@deepseek-ai/dsh-agent'
-import LlmRuntime, { ToolCallId, type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import LlmRuntime, { type ToolCallId, type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import SessionStore, { type SessionId } from '@deepseek-ai/dsh-session'
 import SessionPersistence, { type SessionHandle, type SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { TOOL_ABORTED_BEFORE_DISPATCH } from '@deepseek-ai/dsh-tools'
@@ -56,7 +57,7 @@ afterEach(async () => {
 describe('session-checkpoint-policy request boundary', () => {
   it('awaits the live session checkpoint before constructing the downstream model stream', async () => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('request-checkpoint'))
+    const session = ctx.sessions.create(brandString<SessionId>('request-checkpoint'))
     session.append('turn/start', { turn: 1 })
     const gate = Promise.withResolvers<undefined>()
     const order: string[] = []
@@ -92,14 +93,14 @@ describe('session-checkpoint-policy request boundary', () => {
     ctx.on('session/flush', () => { order.push('flush') })
     ctx.llm.registerAdapter(['mock'], new RecordingAdapter(order))
     await drain(ctx.llm.stream({
-      provider: 'mock', model: 'mock', messages: [], sessionId: SessionId('detached'),
+      provider: 'mock', model: 'mock', messages: [], sessionId: brandString<SessionId>('detached'),
     }))
     expect(order).toEqual(['adapter'])
   })
 
   it('does not dispatch the adapter when the checkpoint rejects', async () => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('request-failure'))
+    const session = ctx.sessions.create(brandString<SessionId>('request-failure'))
     const order: string[] = []
     ctx.on('session/flush', () => Promise.reject(new Error('disk unavailable')))
     ctx.llm.registerAdapter(['mock'], new RecordingAdapter(order))
@@ -113,7 +114,7 @@ describe('session-checkpoint-policy request boundary', () => {
 describe('session-checkpoint-policy tool and step boundaries', () => {
   it('awaits the checkpoint before a top-level tool body', async ({ onTestFinished }) => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('tool-checkpoint'))
+    const session = ctx.sessions.create(brandString<SessionId>('tool-checkpoint'))
     const agent = { session } as Agent
     const gate = Promise.withResolvers<undefined>()
     onTestFinished(() => { gate.resolve(undefined) })
@@ -132,7 +133,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
     })
 
     const pending = executeToolFixture(ctx, {
-      callId: ToolCallId('write-1'), name: 'write', arguments: {}, agent,
+      callId: brandString<ToolCallId>('write-1'), name: 'write', arguments: {}, agent,
       signal: new AbortController().signal,
     })
     await entered.promise
@@ -144,7 +145,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
 
   it('does not dispatch when cancellation lands during the tool checkpoint', async ({ onTestFinished }) => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('tool-checkpoint-cancel'))
+    const session = ctx.sessions.create(brandString<SessionId>('tool-checkpoint-cancel'))
     const agent = { session } as Agent
     const controller = new AbortController()
     const gate = Promise.withResolvers<undefined>()
@@ -164,7 +165,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
     })
 
     const pending = executeToolFixture(ctx, {
-      callId: ToolCallId('write-cancelled'), name: 'write', arguments: {}, agent,
+      callId: brandString<ToolCallId>('write-cancelled'), name: 'write', arguments: {}, agent,
       signal: controller.signal,
     })
     await entered.promise
@@ -185,7 +186,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
 
   it('turns a rejected checkpoint into an error result without running the tool body', async () => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('tool-failure'))
+    const session = ctx.sessions.create(brandString<SessionId>('tool-failure'))
     const agent = { session } as Agent
     let ran = false
     ctx.on('session/flush', () => Promise.reject(new Error('disk unavailable')))
@@ -195,7 +196,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
       execute: async () => { ran = true; return null },
     })
     const result = await executeToolFixture(ctx, {
-      callId: ToolCallId('write-2'), name: 'write', arguments: {}, agent,
+      callId: brandString<ToolCallId>('write-2'), name: 'write', arguments: {}, agent,
       signal: new AbortController().signal,
     })
     expect(result.isError).toBe(true)
@@ -205,7 +206,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
 
   it('reuses the outer checkpoint for a nested tool dispatch', async () => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('nested-tool'))
+    const session = ctx.sessions.create(brandString<SessionId>('nested-tool'))
     const agent = { session } as Agent
     let flushes = 0
     ctx.on('session/flush', () => { flushes += 1 })
@@ -215,7 +216,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
       execute: async () => null,
     })
     await executeToolFixture(ctx, {
-      callId: ToolCallId('nested-1'), name: 'nested', arguments: {}, agent,
+      callId: brandString<ToolCallId>('nested-1'), name: 'nested', arguments: {}, agent,
       parent: Symbol('outer') as never,
       signal: new AbortController().signal,
     })
@@ -224,7 +225,7 @@ describe('session-checkpoint-policy tool and step boundaries', () => {
 
   it('checkpoints during pre-step processing', async () => {
     const ctx = await setup()
-    const session = ctx.sessions.create(SessionId('post-step'))
+    const session = ctx.sessions.create(brandString<SessionId>('post-step'))
     const agent = { session } as Agent
     const flushed: string[] = []
     ctx.on('session/flush', (current) => { flushed.push(current.id) })
@@ -247,7 +248,7 @@ describe('session-checkpoint-policy lifecycle', () => {
     await ctx.plugin(ToolRuntime)
     await ctx.plugin(NativeToolExecutor)
     await ctx.plugin(TestPersistence)
-    const session = ctx.sessions.create(SessionId('disposed-policy'))
+    const session = ctx.sessions.create(brandString<SessionId>('disposed-policy'))
     let flushes = 0
     ctx.on('session/flush', () => { flushes += 1 })
     ctx.llm.registerAdapter(['mock'], new RecordingAdapter([]))

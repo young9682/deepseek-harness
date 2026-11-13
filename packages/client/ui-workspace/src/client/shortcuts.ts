@@ -56,6 +56,7 @@ export function createWorkspaceShortcutControls(): WorkspaceShortcutControls {
  * @param deleteSession - shared delete action: it raises the confirmation
  *   dialog, or the archived notice when that row cannot be deleted.
  * @param reportForkFailure - publish a classified failure through the frame-wide notice channel.
+ * @param markSession - shared reading action; only failed writes raise a notice.
  */
 export function installWorkspaceShortcuts(
   ctx: Context,
@@ -64,6 +65,7 @@ export function installWorkspaceShortcuts(
   archiveSession: (sessionId: SessionId) => void,
   deleteSession: (sessionId: SessionId, displayTitle: string) => void,
   reportForkFailure: (reason: 'unavailable' | 'failed') => void,
+  markSession: (sessionId: SessionId, unread: boolean) => void,
 ): void {
   const t = ctx.locale.bind('workspace')
   const current = () => Object.values(ctx.sessions.list.getSnapshot().byId)
@@ -127,4 +129,30 @@ export function installWorkspaceShortcuts(
         deleteSession(target.id, target.displayTitle)
       } }
   })
+  ctx.effect(() => ctx.shortcuts.register({
+    id: 'session.toggleRead' as ShortcutCommandId,
+    label: () => t('shortcut.toggleRead'), aliases: ['mark as read', 'mark as unread', 'toggle unread'],
+    defaults: {
+      'desktop:macos': { code: 'KeyU', modifiers: ['primary', 'shift'] },
+      'desktop:windows': { code: 'KeyU', modifiers: ['primary', 'shift'] },
+      'web:macos': { code: 'KeyU', modifiers: ['primary', 'shift'] },
+      'web:windows': { code: 'KeyU', modifiers: ['primary', 'shift'] },
+    },
+    regions: ['page', 'editable'], modals: [],
+    resolve: (context) => {
+      const target = current()
+      if (target === undefined || target.blank) return { status: 'blocked', reason: t('shortcut.noSession') }
+      // Like the row menu, a Peer that may not mark reading has no reading command.
+      if (!ctx.remoteAccess.source('session', target.id, 'sessionStatus/mark').getSnapshot()) return { status: 'pass' }
+      if (context.modal !== null) return { status: 'blocked', reason: t('shortcut.closeDialog') }
+      if (ctx.layout.panelInfo.getSnapshot().activePanelId !== null) return { status: 'blocked', reason: t('shortcut.closePanel') }
+      if (ctx.workspaces.list.getSnapshot().archivedSessionIds.includes(target.id)) {
+        return { status: 'blocked', reason: t('shortcut.archivedReading') }
+      }
+      const status = ctx.uiSession.sessionStatus
+      if (!status.readingReady.getSnapshot()) return { status: 'blocked', reason: t('shortcut.readingUnavailable') }
+      const unread = status.getSnapshot().get(target.id)?.completionUnread === true
+      return { status: 'handled', run: () => { markSession(target.id, !unread) } }
+    },
+  }), 'ui-workspace: session.toggleRead')
 }
