@@ -8,6 +8,9 @@ import { gatesForMode } from '../run-gates.ts'
 
 const root = resolve(import.meta.dirname, '../..')
 const masterPush = "github.event_name == 'push' && github.ref == 'refs/heads/master'"
+// The deployment's fork guard skips legs its machines cannot run (upstream
+// keeps the plain condition; the repository variable defaults to unset).
+const masterPushSkipGuard = `${masterPush} && vars.DSH_CI_SKIP_UNRUNNABLE_LEGS != 'true'`
 const runtimeBuilder = './.github/workflows/build-exe-for-python-sdk.yml'
 
 interface Job {
@@ -103,7 +106,7 @@ describe('master-only platform scheduling', () => {
     expect(Object.keys(master.on).sort()).toEqual(['push', 'workflow_dispatch'])
     const runtime = master.jobs['python-runtime']!
     expect(runtime).toMatchObject({
-      if: masterPush,
+      if: masterPushSkipGuard,
       uses: runtimeBuilder,
       with: { ci: true, targets: 'node24-linux-arm64,node24-macos-arm64,node24-macos-x64' },
       secrets: { DEEPSEEK_API_KEY_EXTERNAL: '${{ secrets.DEEPSEEK_API_KEY_EXTERNAL }}' },

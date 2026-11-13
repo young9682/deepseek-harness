@@ -110,7 +110,7 @@ spec:
               cpu: "4"
               memory: 8Gi
             limits:
-              cpu: "8"
+              cpu: "12"
               memory: 16Gi
           volumeMounts:
             - name: entry
