@@ -12,6 +12,8 @@ data:
     # traffic through the campus proxy stalls connections mid-download.
     export NO_PROXY="${NO_PROXY:+$NO_PROXY,}archive.ubuntu.com,security.ubuntu.com,deb.nodesource.com"
     echo 'Acquire::Retries "6";' > /etc/apt/apt.conf.d/80retries
+    echo 'Acquire::http::Timeout "60";' > /etc/apt/apt.conf.d/80timeout
+    echo 'Acquire::https::Timeout "60";' >> /etc/apt/apt.conf.d/80timeout
     apt-get update -qq
     apt-get install -y -qq curl ca-certificates sudo git build-essential python3 musl-tools apt-transport-https libicu-dev > /dev/null
     curl -fsSL https://deb.nodesource.com/setup_24.x -o /tmp/nodesource.sh
@@ -41,6 +43,11 @@ data:
     #!/bin/bash
     set -euo pipefail
     cd /runner
+    # An ephemeral runner exits cleanly (removing its own config) after a
+    # completed job, but a cancelled or interrupted job leaves the config
+    # behind, and config.sh then refuses with "already configured". Remove
+    # the local state; --replace handles the server-side registration.
+    rm -f .credentials .runner .runners
     ./config.sh \
       --url https://github.com/young9682/deepseek-harness \
       --pat "$GH_PAT" \
@@ -78,6 +85,10 @@ spec:
         app: gh-runner
     spec:
       restartPolicy: Always
+      # Cluster nodes are network-heterogeneous (g1 has no direct egress);
+      # g5 has verified direct and proxy connectivity.
+      nodeSelector:
+        kubernetes.io/hostname: g5
       securityContext:
         fsGroup: 1001
       containers:
