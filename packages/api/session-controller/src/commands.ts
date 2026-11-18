@@ -200,7 +200,7 @@ export class SessionCommandController {
     }
 
     const persistence = this.ctx.sessionPersistence
-    if (persistence.supportsDeletion === false) {
+    if (!persistence.supportsDeletion) {
       throw new RemoteError(
         'session/delete-unavailable',
         'The active Session storage backend does not support permanent deletion',

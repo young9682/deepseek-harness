@@ -45,7 +45,7 @@ async function harness(supportsDelete = true): Promise<DeleteHarness> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
-  installSessionReadTestServices(ctx)
+  await installSessionReadTestServices(ctx)
   ctx.provide('agentDefaultModel', {
     currentSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
     saveSelection: () => Promise.resolve(),
@@ -250,7 +250,7 @@ describe('session.delete ordering', () => {
     const without = new Context()
     await without.plugin(SessionStore)
     await without.plugin(AgentRegistry)
-    installSessionReadTestServices(without)
+    await installSessionReadTestServices(without)
     without.provide('agentDefaultModel', {
       currentSelection: () => ({ provider: 'fixture', model: 'fixture-model' }),
       saveSelection: () => Promise.resolve(),
@@ -260,7 +260,7 @@ describe('session.delete ordering', () => {
       contexts: { configureHost: () => {} },
     } as never)
     const persistenceDelete = vi.fn()
-    without.provide('sessionPersistence', { list: async () => [], delete: persistenceDelete } as never)
+    without.provide('sessionPersistence', { list: async () => [], supportsDeletion: true, delete: persistenceDelete } as never)
     without.provide('workspaceRegistry', {
       isArchived: () => false,
       sessionActivity: async () => [],

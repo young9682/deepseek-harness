@@ -206,7 +206,7 @@ export class SqliteSessionPersistence extends SessionPersistence {
 
   override get supportsDeletion(): boolean { return false }
 
-  async delete(): Promise<void> {
-    throw new HarnessError('SQLite Session storage does not support permanent deletion', 'SESSION_DELETE_UNSUPPORTED')
+  delete(): Promise<void> {
+    return Promise.reject(new HarnessError('SQLite Session storage does not support permanent deletion', 'SESSION_DELETE_UNSUPPORTED'))
   }
 }
