@@ -79,9 +79,9 @@ describe.each(['MacIntel', 'Win32', 'Linux x86_64'])('web context menus on %s', 
       'Pin session', 'Rename', 'Mark as unread', 'Fork session', 'Copy Session ID',
     ])
     expect(names).not.toContain('Open in')
-    expect(names.at(-1)).toBe('Archive session')
+    expect(names.slice(-2)).toEqual(['Archive session', 'Delete session'])
     expect(await menu.getByRole('menuitem').evaluateAll(rows => rows.every(row => row.querySelector('svg[data-icon]')))).toBe(true)
-    expect(await menu.getByRole('separator').count()).toBe(2)
+    expect(await menu.getByRole('separator').count()).toBe(3)
     expect(await menu.getByRole('menuitem', { name: 'Archive session', exact: true }).evaluate(row =>
       getComputedStyle(row.parentElement!.parentElement!).borderTopWidth)).toBe('0px')
     const alignedSeparators = async () => {

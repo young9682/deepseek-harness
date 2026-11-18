@@ -117,6 +117,21 @@ describe.each([
     })
     const page: Page = await context.newPage()
     try {
+      if (kind === 'zone' && copy.locale === 'en-US') {
+        // Keep the clipping fixture independent of Chromium's ICU label lengths.
+        await page.addInitScript(() => {
+          const prototype = Intl.DateTimeFormat.prototype
+          const format = Reflect.get(prototype, 'formatToParts')
+          prototype.formatToParts = function (date) {
+            const parts = format.call(this, date)
+            const options = this.resolvedOptions()
+            if (options.timeZone !== 'Asia/Shanghai' || options.timeZoneName !== 'longGeneric') return parts
+            return parts.map(part => part.type === 'timeZoneName'
+              ? { ...part, value: 'China Standard Time (Shanghai, Beijing, Chongqing, and surrounding regions)' }
+              : part)
+          }
+        })
+      }
       const consoleWatch = watchConsole(page)
       await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
       await revealNavigationDrawer(page, copy.locale === 'zh-CN' ? 'zh' : 'en')

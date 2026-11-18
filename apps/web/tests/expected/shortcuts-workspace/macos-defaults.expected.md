@@ -55,6 +55,9 @@
         - button "Edit shortcut for Close current page or window"
         - text: Close current page or window ⌥ ⌘ W
       - listitem:
+        - button "Edit shortcut for Delete session"
+        - text: Delete session ⌥ ⌘ D
+      - listitem:
         - button "Edit shortcut for Toggle read/unread"
         - text: Toggle read/unread ⇧ ⌘ U
   - region "Message input":
