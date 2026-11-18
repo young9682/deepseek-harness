@@ -199,6 +199,15 @@ export class SessionCommandController {
       throw apiSessionSubagentOwnershipError(sessionId)
     }
 
+    const persistence = this.ctx.sessionPersistence
+    if (persistence.supportsDeletion === false) {
+      throw new RemoteError(
+        'session/delete-unavailable',
+        'The active Session storage backend does not support permanent deletion',
+        { sessionId, reason: 'the active storage backend does not support deletion' },
+      )
+    }
+
     if (request.stopActivity !== true) {
       const activity = await this.ctx.workspaceRegistry.sessionActivity(sessionId)
       if (activity.length > 0) {
@@ -225,7 +234,7 @@ export class SessionCommandController {
     }
 
     try {
-      await this.ctx.sessionPersistence.delete(sessionId)
+      await persistence.delete(sessionId)
     } catch (error: unknown) {
       if (error instanceof Error && error.name === 'SessionPersistenceActiveError') {
         throw new RemoteError('session/agent-busy', error.message, { reason: 'a write handle is still open' }, { cause: error })
@@ -353,6 +362,7 @@ export class SessionCommandController {
       )
     }
     const seed = buildForkSeed(source.events, boundary)
+    const endSeq = SessionLogOffset(Math.min(boundary + 1, source.persistedEventCount ?? boundary + 1))
     let workspace: Workspace | undefined
     try {
       workspace = await this.forkWorkspace(source.header)
@@ -370,6 +380,7 @@ export class SessionCommandController {
       await this.ctx.agents.create({
         sessionId: childId,
         seed,
+        parentSource: { sessionId: request.sessionId, endSeq },
         inheritedEventCount: SessionLogOffset(boundary + 1),
         meta: {
           ...(source.header.cwd === undefined ? {} : { cwd: source.header.cwd }),

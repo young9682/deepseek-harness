@@ -41,7 +41,7 @@ interface DeleteHarness {
   }
 }
 
-async function harness(): Promise<DeleteHarness> {
+async function harness(supportsDelete = true): Promise<DeleteHarness> {
   const ctx = new Context()
   await ctx.plugin(SessionStore)
   await ctx.plugin(AgentRegistry)
@@ -72,6 +72,7 @@ async function harness(): Promise<DeleteHarness> {
     list: async () => [],
     open: () => { throw new Error('event bodies must not be opened') },
     stat: async () => undefined,
+    supportsDeletion: supportsDelete,
     delete: persistenceDelete,
   } as never)
   const checkpointDelete = vi.fn(async () => { order.push('checkpoint.delete') })
@@ -121,6 +122,15 @@ function liveSession(b: DeleteHarness, id: string): Session {
 }
 
 describe('session.delete refusals', () => {
+  it('keeps the Session live when its storage backend does not support deletion', async () => {
+    const b = await harness(false)
+    liveSession(b, 'unsupported')
+    await expect(b.controller.delete({ sessionId: sid('unsupported'), stopActivity: true }))
+      .rejects.toMatchObject({ code: 'session/delete-unavailable' })
+    expect(b.stops).toEqual([])
+    expect(b.order).toEqual([])
+  })
+
   it('refuses an archived Session and changes nothing', async () => {
     const b = await harness()
     liveSession(b, 'archived')

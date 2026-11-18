@@ -137,8 +137,9 @@ function secondTurn(startSeq = 6): SessionEvent[] {
  * fresh backend over fresh, empty storage each call.
  * @param name - suite label, e.g. `jsonl-none` / `sqlite`.
  * @param make - factory producing one fresh {@link ContractBackend} per test.
+ * @param supportsDelete - whether the backend implements permanent deletion.
  */
-export function runPersistenceContract(name: string, make: () => Promise<ContractBackend>): void {
+export function runPersistenceContract(name: string, make: () => Promise<ContractBackend>, supportsDelete = true): void {
   describe(`SessionPersistence contract: ${name}`, () => {
     it('round-trips through one write handle: append, self-read, offset/length defaults', async () => {
       const { persistence, dispose } = await make()
@@ -579,7 +580,16 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
       }
     })
 
-    it('delete removes every trace of the session for this instance and a fresh one', async () => {
+    it('reports whether permanent deletion is supported', async () => {
+      const { persistence, dispose } = await make()
+      try {
+        expect(persistence.supportsDeletion).toBe(supportsDelete)
+      } finally {
+        await dispose()
+      }
+    })
+
+    it.skipIf(!supportsDelete)('delete removes every trace of the session for this instance and a fresh one', async () => {
       const backend = await make()
       try {
         const m = meta('deleted', '/work')
@@ -614,7 +624,7 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
       }
     })
 
-    it('delete of an absent session resolves, twice', async () => {
+    it.skipIf(!supportsDelete)('delete of an absent session resolves, twice', async () => {
       const { persistence, dispose } = await make()
       try {
         const absent = SessionId('never-stored')
@@ -625,7 +635,7 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
       }
     })
 
-    it('delete refuses SessionPersistenceActiveError while a write handle is open, changing nothing', async () => {
+    it.skipIf(!supportsDelete)('delete refuses SessionPersistenceActiveError while a write handle is open, changing nothing', async () => {
       const { persistence, dispose } = await make()
       try {
         const m = meta('active-claim')
@@ -650,7 +660,7 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
       }
     })
 
-    it('delete resolves after the blocking write handle closes', async () => {
+    it.skipIf(!supportsDelete)('delete resolves after the blocking write handle closes', async () => {
       const { persistence, dispose } = await make()
       try {
         const m = meta('close-then-delete')
@@ -666,7 +676,7 @@ export function runPersistenceContract(name: string, make: () => Promise<Contrac
       }
     })
 
-    it('delete of a created-but-unappended session resolves once its creator closed it away', async () => {
+    it.skipIf(!supportsDelete)('delete of a created-but-unappended session resolves once its creator closed it away', async () => {
       const { persistence, dispose } = await make()
       try {
         const m = meta('unappended')
