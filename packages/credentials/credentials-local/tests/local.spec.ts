@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
+import { writeFileAtomic } from '@deepseek-ai/dsh-atomic-write'
 import { createLaunchEnvironmentSnapshot, DSH_LAUNCH_ENVIRONMENT_KEY } from '@deepseek-ai/dsh-launch-environment'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
 import { LocalCredentialProvider, resolveSpec } from '../src/index.ts'
@@ -510,15 +511,18 @@ describe('real hot reload', () => {
     const ctx = await boot({ path, debounceMs: 10 })
     const seen = updates(ctx)
 
-    await writeCredentials(path, 'version: 1\nrefs:\n  DSH_CRED_TEST: live\n  DSH_CRED_OTHER: extra\n')
+    // Publish complete editor saves so a watcher read cannot observe truncation.
+    await writeFileAtomic(path, 'version: 1\nrefs:\n  DSH_CRED_TEST: live\n  DSH_CRED_OTHER: extra\n', { mode: 0o600 })
     await vi.waitFor(async () => {
       expect(await ctx.credentials.resolve(KEY)).toEqual({ value: 'live', source: 'file' })
+      expect(await ctx.credentials.resolve(OTHER)).toEqual({ value: 'extra', source: 'file' })
     })
 
     // Wholesale replacement: an entry deleted on disk never lingers in memory.
-    await writeCredentials(path, 'version: 1\nrefs:\n  DSH_CRED_TEST: live\n')
+    await writeFileAtomic(path, 'version: 1\nrefs:\n  DSH_CRED_TEST: live\n', { mode: 0o600 })
     await vi.waitFor(async () => {
       expect(await ctx.credentials.resolve(OTHER)).toBeUndefined()
+      expect(await ctx.credentials.resolve(KEY)).toEqual({ value: 'live', source: 'file' })
     })
 
     const before = seen.length
@@ -526,7 +530,7 @@ describe('real hot reload', () => {
     await new Promise(resolvePause => setTimeout(resolvePause, 200))
     // Exactly the committed write's own event: the watcher echo of our own
     // content is recognized by the text cache and publishes nothing extra.
-    expect(seen.length).toBe(before + 1)
+    expect(seen.slice(before)).toEqual([KEY])
     expect(await ctx.credentials.resolve(KEY)).toEqual({ value: 'self-written', source: 'file' })
   })
 })
