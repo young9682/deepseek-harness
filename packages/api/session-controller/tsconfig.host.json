@@ -31,6 +31,9 @@
   ],
   "references": [
     {
+      "path": "../../boot/cmdline"
+    },
+    {
       "path": "../gateway/tsconfig.host.json"
     },
     {

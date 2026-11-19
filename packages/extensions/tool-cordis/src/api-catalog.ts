@@ -3328,8 +3328,8 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'authorized bounded Session search results.',
       },
       {
-        signature: '@Remote(\'create\') create(request: SessionCreateRequest): Promise<SessionCreateValue>',
-        description: 'Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.',
+        signature: '@Remote(\'create\') async create(request: SessionCreateRequest): Promise<SessionCreateValue>',
+        description: 'Prepare one ordinary Session, reusing an available Workspace blank before creating another.',
         parameters: [{ name: 'request', description: 'optional blank Session to reuse, location, and Agent preset.' }],
         returns: 'the created or reused Session identity and its preset when configured.',
       },
@@ -3472,6 +3472,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Stream a complete live-control baseline followed by replacement frames.',
         parameters: [{ name: 'signal', description: 'cancellation owned by the Remote stream carrier.' }],
         returns: 'one complete baseline followed by live replacement frames.',
+      },
+      {
+        signature: '@Remote({ mode: \'stream\' }) async *observeUnusedBlanks(signal: AbortSignal): RemoteStream<readonly SessionId[], readonly SessionId[]>',
+        description: 'Ask the browser about nominated unused blanks during process shutdown.',
+        parameters: [{ name: 'signal', description: 'lifetime of this authenticated Remote stream.' }],
+        returns: 'one candidate list and an uplink for the confirmed empty Sessions.',
       },
     ],
   },
@@ -5647,6 +5653,14 @@ export const EVENT_API: readonly EventApiEntry[] = [
     summary: 'Profile patches were reconciled into the running Loader tree: every entry update settled and no new inactive entry was introduced.',
     description: 'Profile patches were reconciled into the running Loader tree: every entry update settled and no new inactive entry was introduced. Carries no diff; listeners re-read Loader entries.',
     parameters: [],
+  },
+  {
+    name: 'app/before-shutdown',
+    mode: 'parallel',
+    signature: '\'app/before-shutdown\'(signal: AbortSignal): void | Promise<void>',
+    summary: 'Complete graceful exit work while the application services are still available.',
+    description: 'Complete graceful exit work while the application services are still available.',
+    parameters: [{ name: 'signal', description: 'deadline for the work that needs live application services.' }],
   },
   {
     name: 'approval/request',

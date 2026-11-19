@@ -153,7 +153,7 @@ export class SessionInputShell implements SessionInput {
     insertQuote: (text, summary) => this.insertQuote(text, summary),
     captureInsertion: () => ({ ...this.caretSpan(), draftRev: this.rev }),
     insertText: (text, span) => {
-      if (frozen(this.snapshot.phase) || this.disposed) return false
+      if (frozen(this.snapshot.phase) || this.inputClosed) return false
       if (span.draftRev !== this.rev) return false
       return this.draftEditor.insertAsyncText(span, text)
     },
@@ -177,6 +177,9 @@ export class SessionInputShell implements SessionInput {
   private draftSnapshotCache: { revision: number; value: DraftSnapshot } | undefined
   private attachmentIds: readonly DraftAttachmentId[] = []
   private disposed = false
+  private shutdownSuspended = false
+
+  private get inputClosed(): boolean { return this.disposed || this.shutdownSuspended }
   /** Conversation store writer for the current semantic document. */
   private persistDraft: ((draft: DraftSnapshot) => void) | undefined
   /** A restored draft's command token waiting for the trigger pipeline, with the revision its restore produced. */
@@ -231,6 +234,7 @@ export class SessionInputShell implements SessionInput {
    * @param text - plain text or the complete semantic document.
    */
   setDraft(text: DraftInput): void {
+    if (this.inputClosed) return
     const draft = resolveDraftInput(text)
     this.cancelCommandRestore()
     if (draft.references.length === 0 && (draft.quotes?.length ?? 0) === 0) this.draftEditor.setDraft(draft.text)
@@ -246,7 +250,7 @@ export class SessionInputShell implements SessionInput {
    * @returns whether the editable draft accepted the quote.
    */
   insertQuote(text: string, summary?: QuoteSummary): boolean {
-    if (this.disposed || this.snapshot.phase !== 'plain' || !this.sessionAcceptsInsertion() || text.trim() === '') return false
+    if (this.inputClosed || this.snapshot.phase !== 'plain' || !this.sessionAcceptsInsertion() || text.trim() === '') return false
     const inserted = this.draftEditor.insertQuote(text.replace(/\r\n?/gu, '\n'), { remove: this.deps.quoteRemoveLabel?.() ?? '' }, summary)
     if (inserted) this.focus()
     return inserted
@@ -332,7 +336,7 @@ export class SessionInputShell implements SessionInput {
   }
 
   private draftInitializationBlocked(): boolean {
-    return this.disposed || frozen(this.core.state.phase)
+    return this.inputClosed || frozen(this.core.state.phase)
   }
 
   /** Whether the Session lets features outside the composer insert quotes or references. */
@@ -345,7 +349,7 @@ export class SessionInputShell implements SessionInput {
 
   /** Append ordered attachment ids unless an admission transaction is locked. */
   addAttachments(ids: readonly DraftAttachmentId[]): boolean {
-    if (frozen(this.snapshot.phase)) return false
+    if (this.inputClosed || frozen(this.snapshot.phase)) return false
     if (ids.length === 0) return true
     this.attachmentIds = [...this.attachmentIds, ...ids]
     this.publish()
@@ -360,7 +364,7 @@ export class SessionInputShell implements SessionInput {
    * @returns false after disposal, when admission is locked, or when the editor refuses insertion.
    */
   addFiles(references: readonly ReferenceInsert[], ids: readonly DraftAttachmentId[]): boolean {
-    if (this.disposed || frozen(this.snapshot.phase)) return false
+    if (this.inputClosed || frozen(this.snapshot.phase)) return false
     if (!this.draftEditor.insertFileReferences(references)) return false
     this.attachmentIds = [...this.attachmentIds, ...ids]
     this.publish()
@@ -378,7 +382,7 @@ export class SessionInputShell implements SessionInput {
 
   /** @inheritdoc */
   canInsertReferences(): boolean {
-    return !this.disposed && !frozen(this.snapshot.phase) && this.sessionAcceptsInsertion()
+    return !this.inputClosed && !frozen(this.snapshot.phase) && this.sessionAcceptsInsertion()
   }
 
   /**
@@ -415,6 +419,7 @@ export class SessionInputShell implements SessionInput {
    * @param text - pasted plain text.
    */
   paste(text: string): void {
+    if (this.inputClosed) return
     this.draftEditor.paste(text)
   }
 
@@ -427,7 +432,7 @@ export class SessionInputShell implements SessionInput {
    * @param allowEmpty - explicitly admit empty continuation input through the default sink.
    */
   submit(mode: InputSubmitMode = 'queue', source?: 'click' | 'enter', allowEmpty = false): void {
-    if (this.disposed) return
+    if (this.inputClosed) return
     const timestamp = Date.now()
     let state: MessageSubmissionState | undefined
     if (this.snapshot.phase === 'plain' && (this.snapshot.draft.trim() !== '' || this.attachmentIds.length > 0)) {
@@ -625,6 +630,15 @@ export class SessionInputShell implements SessionInput {
   }
 
   // ---- wiring-layer extras (not on the frozen SessionInput face) ----
+
+  /**
+   * Hold an attested empty draft while the Host completes its shutdown.
+   * @returns a disposer that lets a new Host connection resume input.
+   */
+  suspendForShutdown(): () => void {
+    this.shutdownSuspended = true
+    return () => { this.shutdownSuspended = false }
+  }
 
   /**
    * Teardown the shell, abort the in-flight attempt, and return every

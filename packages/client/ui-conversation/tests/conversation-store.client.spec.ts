@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { DraftSnapshot } from '../src/client/contract/draft-editor.ts'
-import { createConversationStore, readConversationDraft, readConversationViewPreference } from '../src/client/stores.ts'
+import { createConversationStore, hasNoSavedDraft, readConversationDraft, readConversationViewPreference } from '../src/client/stores.ts'
 
 const KEY = 'dsh.conversation'
 
@@ -139,6 +139,20 @@ describe('createConversationStore', () => {
     const sessionId = 'missing' as SessionId
     expect(readConversationDraft(sessionId)).toEqual({ text: '', references: [] })
     expect(readConversationViewPreference(sessionId)).toBeNull()
+    expect(hasNoSavedDraft(sessionId)).toBe(true)
+  })
+
+  it.each([
+    ['{"draft":""}', true],
+    ['{"draft":{"text":"","references":[]}}', true],
+    ['{"draft":"unsent text"}', false],
+    ['{"draft":null}', false],
+    ['{"view":"chat"}', false],
+    ['{truncated', false],
+  ])('requires a valid empty draft during shutdown: %s', (raw, empty) => {
+    const sessionId = 'shutdown-draft' as SessionId
+    localStorage.setItem(`${KEY}.${sessionId}`, raw)
+    expect(hasNoSavedDraft(sessionId)).toBe(empty)
   })
 
   it('returns empty preferences when browser storage is absent', () => {

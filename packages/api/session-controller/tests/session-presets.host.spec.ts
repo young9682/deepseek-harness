@@ -117,7 +117,11 @@ async function harness(options: HarnessOptions = {}) {
     },
   }) as never)
   const { members, archived } = options.workspace ?? { members: [], archived: [] }
-  const workspace = { id: WORKSPACE, path: cwd, sessionIds: members, attachSession: () => Promise.resolve() }
+  const sessionIds = [...members]
+  const workspace = { id: WORKSPACE, path: cwd, sessionIds, attachSession: (id: SessionId) => {
+    if (!sessionIds.includes(id)) sessionIds.push(id)
+    return Promise.resolve()
+  } }
   ctx.provide('workspaceRegistry', {
     get: (id: WorkspaceId) => id === WORKSPACE ? workspace : undefined,
     list: () => [workspace],
@@ -689,6 +693,53 @@ describe('session.create reuse of a stored blank Session', () => {
 })
 
 describe('session.create Workspace placement', () => {
+  it('reuses a workspace blank even when the browser supplies no Session ID', async () => {
+    const { remote } = await harness({ presets: ['standard'] })
+    const first = await remote.create({ workspaceId: WORKSPACE })
+    const second = await remote.create({ workspaceId: WORKSPACE })
+    expect(first.ok).toBe(true)
+    expect(second).toEqual(first)
+  })
+
+  it('coalesces concurrent workspace creates from browsers with stale catalogs', async () => {
+    const { remote, ctx } = await harness({ presets: ['standard'] })
+    const results = await Promise.all([
+      remote.create({ workspaceId: WORKSPACE }),
+      remote.create({ workspaceId: WORKSPACE }),
+    ])
+    expect(results[0]?.ok).toBe(true)
+    expect(results[1]).toEqual(results[0])
+    expect(ctx.sessions.list()).toHaveLength(1)
+  })
+
+  it('tries another workspace blank when the preferred Session has started', async () => {
+    const preferred = brandString<SessionId>('preferred-started')
+    const alternate = brandString<SessionId>('alternate-blank')
+    const { remote, ctx } = await harness({
+      presets: ['standard'], workspace: { members: [preferred, alternate], archived: [] },
+    })
+    await remote.create({ sessionId: preferred })
+    await remote.create({ sessionId: alternate })
+    ctx.sessions.get(preferred)?.append('turn/start', { turn: 1 })
+    await expect(remote.create({ workspaceId: WORKSPACE, sessionId: preferred }))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: alternate } })
+    expect(ctx.sessions.list()).toHaveLength(2)
+  })
+
+  it('resumes the same compatible stored blank without a list hint or a live Agent', async () => {
+    const draft = brandString<SessionId>('stored-compatible')
+    const other = brandString<SessionId>('stored-other-preset')
+    const stored = new Map<SessionId, StoredSession>()
+    const { remote, cwd, resumed } = await harness({
+      presets: ['standard', 'minimal'], stored, workspace: { members: [draft, other], archived: [] },
+    })
+    stored.set(draft, { header: storedHeader(draft, cwd, { agentPreset: 'standard' }), events: [modelSelection(0)] })
+    stored.set(other, { header: storedHeader(other, cwd, { agentPreset: 'minimal' }), events: [modelSelection(0)] })
+    await expect(remote.create({ workspaceId: WORKSPACE, agentPreset: 'standard' }))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: draft, agentPreset: 'standard' } })
+    expect(resumed).toEqual([draft])
+  })
+
   it('reuses a blank member of the requested Workspace', async () => {
     const draft = brandString<SessionId>('member-draft')
     const { remote } = await harness({ presets: ['standard'], workspace: { members: [draft], archived: [] } })

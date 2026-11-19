@@ -53,6 +53,15 @@ export interface AppReady {
 }
 
 declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Complete graceful exit work while the application services are still available.
+     * @mode parallel
+     * @param signal - deadline for the work that needs live application services.
+     */
+    'app/before-shutdown'(signal: AbortSignal): void | Promise<void>
+  }
+
   interface Context {
     /** The invocation's inner arguments; provided by a launcher before the tree mounts. */
     cmdlineArgs?: CmdlineArgs
@@ -86,6 +95,16 @@ export function provideCmdline(ctx: Context, host: CmdlineHost): void {
   ctx.provide('cmdlineArgs', { get: () => snapshot })
   ctx.provide('appExit', host.exit)
   if (host.ready !== undefined) ctx.provide('appReady', host.ready)
+}
+
+/**
+ * Run graceful exit listeners before the launcher disposes the application tree.
+ * @param ctx - successfully started application context.
+ * @param signal - deadline for work that needs live application services.
+ * @returns after exit listeners settle.
+ */
+export async function dispatchAppShutdown(ctx: Context, signal: AbortSignal): Promise<void> {
+  await ctx.parallel('app/before-shutdown', signal)
 }
 
 /** Process stdin operations used to bind a stdio application's lifetime. */

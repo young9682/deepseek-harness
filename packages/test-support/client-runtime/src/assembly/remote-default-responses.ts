@@ -53,6 +53,8 @@ export const remoteDefaultResponses: RemoteTable = {
     'sessionStatus/follow': openStream([{ type: 'baseline', items: [] }]),
     // api-session-controller client `apply`: the control stream's opening baseline, then open.
     'session/control': openStream([{ type: 'baseline', value: { projections: {} } }]),
+    // api-session-controller waits for a shutdown draft check.
+    'session/observeUnusedBlanks': openStream(),
     // ui-settings-account shares the account snapshot across settings and the sidebar menu.
     'account/watch': openStream([{ type: 'snapshot', state: { status: 'signed-out', attempt: null, links: { usageUrl: 'https://platform.deepseek.com/usage', topUpUrl: 'https://platform.deepseek.com/top_up' } } }]),
     // api-workspace-controller client `apply`: the follow stream's opening baseline, then open.

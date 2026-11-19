@@ -41,18 +41,31 @@ export function createConversationStore(): EngineStoreHandle<ConversationStoreSt
  * @returns saved semantic content, or an empty document when storage is absent or invalid.
  */
 export function readConversationDraft(sessionId: SessionId): DraftSnapshot {
-  const empty: DraftSnapshot = { text: '', references: [] }
-  if (typeof localStorage === 'undefined') return empty
+  return storedDraft(sessionId) ?? { text: '', references: [] }
+}
+
+function storedDraft(sessionId: SessionId): DraftSnapshot | null | undefined {
   try {
     const raw = localStorage.getItem(`${CONVERSATION_STORE_KEY}.${sessionId}`)
-    if (raw === null) return empty
+    if (raw === null) return null
     const stored: unknown = JSON.parse(raw)
-    if (typeof stored !== 'object' || stored === null || !('draft' in stored)) return empty
-    return parseStoredDraft(stored.draft) ?? empty
+    if (typeof stored !== 'object' || stored === null || !('draft' in stored)) return undefined
+    return parseStoredDraft(stored.draft)
   } catch (_error: unknown) {
-    // Unavailable browser storage or malformed JSON has no usable saved draft.
-    return empty
+    // A missing record is distinguishable from unavailable or invalid storage.
+    return undefined
   }
+}
+
+/**
+ * Check saved draft absence without treating inaccessible or malformed storage as empty.
+ * @param sessionId - freshly minted Session's storage suffix.
+ * @returns whether the stored draft is absent or valid and empty.
+ */
+export function hasNoSavedDraft(sessionId: SessionId): boolean {
+  const draft = storedDraft(sessionId)
+  return draft === null || (draft !== undefined && draft.text === '' && draft.references.length === 0
+    && (draft.quotes?.length ?? 0) === 0 && draft.command === undefined)
 }
 
 /**

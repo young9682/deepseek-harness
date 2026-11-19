@@ -26,7 +26,7 @@ import type { InputSubmitMode } from '../contract/composer-submission.ts'
 import type { PopupDismissFace } from './facade.ts'
 import { SessionInputShell } from './facade.ts'
 import { reportMessageSubmission } from './submission-analytics.ts'
-import { readConversationDraft } from '../stores.ts'
+import { hasNoSavedDraft, readConversationDraft } from '../stores.ts'
 
 /** Structural command face for per-session popup resolution. */
 interface CommandFace {
@@ -274,6 +274,42 @@ export class InputHub implements SessionInputResolver {
     // byId also lists retained subagent Sessions outside the Host list.
     return (Object.keys(sessions.list.getSnapshot().byId) as SessionId[])
       .filter(id => (sessions.retainInfo(id).getSnapshot().retainedBy.draft ?? 0) > 0)
+  }
+
+  /**
+   * Seal empty input during Host shutdown before confirming the nominated Sessions.
+   * @param sessionIds - freshly minted Sessions the Host asked this browser to check.
+   * @returns the attested identities and the input restoration used after reconnection.
+   */
+  checkUnusedBlanks(sessionIds: readonly SessionId[]): { sessionIds: readonly SessionId[]; resume(): void } | undefined {
+    if (typeof document === 'undefined') return undefined
+    const sessions = this.sessions()
+    const release: Array<() => void> = []
+    const unused = sessionIds.filter((id) => {
+      if (!hasNoSavedDraft(id)) return false
+      try {
+        if (localStorage.getItem(`${UNLOAD_MARK_PREFIX}.${id}`) !== null) return false
+      } catch (_error: unknown) {
+        return false
+      }
+      const binding = sessions.binding(id)
+      if (binding === undefined) return true
+      const shell = this.shells.get(binding)
+      const session = binding.session.getSnapshot()
+      if (shell === undefined || session.pendingSubmissions.length > 0 || session.running) return false
+      const input = shell.snapshot
+      if (input.phase !== 'plain' || input.draft !== '' || input.attachmentIds.length > 0 || input.queue.length > 0) return false
+      release.push(shell.suspendForShutdown())
+      return true
+    })
+    if (unused.length === 0) return undefined
+    const root = document.documentElement
+    const inert = root.inert
+    root.inert = true
+    return { sessionIds: unused, resume: () => {
+      root.inert = inert
+      for (const resume of release) resume()
+    } }
   }
 
   /**

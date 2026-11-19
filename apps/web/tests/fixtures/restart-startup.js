@@ -2,7 +2,7 @@
 export const name = 'web-restart-startup'
 
 /** Keep the carrier services available while Session Controller startup is held. */
-export const inject = ['typertGateway', 'connection', 'webServer']
+export const inject = ['typertGateway', 'connection', 'webServer', 'appExit']
 
 /**
  * Provide the test-only dependency after startup has been released.
@@ -10,8 +10,18 @@ export const inject = ['typertGateway', 'connection', 'webServer']
  * @returns {Promise<void>} Once the barrier is released or the plugin is disposed.
  */
 export async function apply(ctx) {
+  const exit = ctx.get('appExit')
+  if (typeof process.send !== 'function' || exit === undefined) {
+    throw new Error('web restart fixture requires an IPC channel and application exit')
+  }
+  const stop = (message) => {
+    if (message === 'shutdown') exit(0)
+  }
+  ctx.effect(() => {
+    process.on('message', stop)
+    return () => { process.off('message', stop) }
+  }, 'web-restart: graceful exit')
   if (process.env.DSH_WEB_RESTART_HOLD_STARTUP === '1') {
-    if (typeof process.send !== 'function') throw new Error('web restart startup fixture requires an IPC channel')
     const released = Promise.withResolvers()
     const resume = (message) => {
       if (message === 'resume-startup') released.resolve(true)

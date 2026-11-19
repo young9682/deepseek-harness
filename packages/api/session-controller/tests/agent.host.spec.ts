@@ -260,7 +260,7 @@ describe('ApiSession creation', () => {
     tempDirs.push(parent)
     const file = join(parent, 'file')
     writeFileSync(file, 'not a directory')
-    await expect(agents.createSession({ cwd: join(file, 'child'), reusable: () => true }))
+    await expect(agents.createSession({ cwd: join(file, 'child'), reusable: () => true, observeReuse: () => {} }))
       .rejects.toThrow('failed to ensure project directory')
   })
 })

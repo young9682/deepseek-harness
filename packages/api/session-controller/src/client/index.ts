@@ -2,6 +2,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-agent/types'
+import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-client-file-upload/client'
 import { typertOwnedValue } from '@deepseek-ai/dsh-typert-protocol'
@@ -97,6 +98,19 @@ export interface SessionRetainFacetMap {}
 export type SessionRetainFacet = Extract<keyof SessionRetainFacetMap, string>
 
 declare module '@deepseek-ai/cordis' {
+  interface Events {
+    /**
+     * Confirm nominated Sessions have no draft, then stop their input during Host exit.
+     * @mode bail
+     * @param sessionIds - Sessions whose local draft state the Host is checking.
+     * @returns candidate identities confirmed empty by the input owner.
+     */
+    'client-session/check-unused-blanks'(sessionIds: readonly SessionId[]): {
+      readonly sessionIds: readonly SessionId[]
+      readonly resume: () => void
+    } | undefined
+  }
+
   interface Context {
     /** Client Session object layer and Agent scope owner. */
     sessions: import('./contract/sessions.ts').ISessions
@@ -134,16 +148,44 @@ export function apply(ctx: Context): void {
     sessions.handleSessionError(sessionId, message)
   })
 
+  let controlReady = false
+  let resumeDraftInput: (() => void) | undefined
   const control = createSessionControlStream(remotes, {
-    accept: (frame) => { sessions.handleControlFrame(frame) },
+    accept: (frame) => {
+      sessions.handleControlFrame(frame)
+      if (frame.type === 'baseline') {
+        controlReady = true
+        resumeDraftInput?.()
+        resumeDraftInput = undefined
+      }
+    },
     failed: (error) => { console.error('[session-controller] control stream failed:', error) },
   })
+  let draftCheck: { controller: AbortController; settled: Promise<void> } | undefined
+  const answerDraftCheck = async (signal: AbortSignal): Promise<void> => {
+    try {
+      const probe = remotes.session.observeUnusedBlanks(signal)
+      for await (const ids of probe) {
+        if (signal.aborted) break
+        const report = controlReady ? ctx.bail('client-session/check-unused-blanks', ids) : undefined
+        resumeDraftInput = report?.resume
+        probe.send(report?.sessionIds ?? [])
+        probe.end()
+      }
+    } catch (_error: unknown) {
+      // An old Host or a lost connection keeps unknown drafts unconfirmed.
+    }
+  }
   const connected = (): void => {
     if (connection.generation.getSnapshot() === undefined) return
     // A ready control baseline may arrive before Cordis delivers connection/reset.
+    controlReady = false
     sessions.handleConnected()
     control.restart()
     control.start()
+    draftCheck?.controller.abort()
+    const controller = new AbortController()
+    draftCheck = { controller, settled: answerDraftCheck(controller.signal) }
   }
   ctx.effect(() => connection.generation.subscribe(connected), 'session-controller.client.generation')
   connected()
@@ -154,5 +196,9 @@ export function apply(ctx: Context): void {
       return typertOwnedValue(reference.binding.ctx, () => { reference.release() })
     },
   })
-  ctx.effect(() => async () => { await control.dispose() }, 'session-controller.client.control')
+  ctx.effect(() => async () => {
+    draftCheck?.controller.abort()
+    await Promise.all([control.dispose(), draftCheck?.settled])
+    resumeDraftInput?.()
+  }, 'session-controller.client.control')
 }

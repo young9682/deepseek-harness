@@ -524,6 +524,27 @@ Current profile facts; scheduling and mutation belong to their callers.
 
 Source: [`packages/boot/app-boot/src/profile-context.ts`](../../packages/boot/app-boot/src/profile-context.ts)
 
+<a id="app-events"></a>
+
+### `app/*` events
+
+<a id="appbefore-shutdown--parallel"></a>
+
+#### `app/before-shutdown` — parallel
+
+Complete graceful exit work while the application services are still available.
+
+```ts cordis-catalog
+/**
+ * Complete graceful exit work while the application services are still available.
+ * @mode parallel
+ * @param signal - deadline for the work that needs live application services.
+ */
+'app/before-shutdown'(signal: AbortSignal): void | Promise<void>
+```
+
+Source: [`packages/boot/cmdline/src/index.ts`](../../packages/boot/cmdline/src/index.ts)
+
 <a id="app-boot-events"></a>
 
 ### `app-boot/*` events

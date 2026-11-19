@@ -61,14 +61,14 @@ describe.each([false, true])('web e2e: selected blank writer held: %s', (held) =
     })
   }
 
-  it('reuses the selected blank or creates on contention without trying another blank', async () => {
+  it('reuses the selected blank or tries another Workspace blank on contention', async () => {
     const first = await openSavedBlank()
     await expect.poll(async () => {
       const id = await selected(first)
       return id !== undefined && (!held || id !== HELD)
     }).toBe(true)
     const selectedId = brandString<SessionId>((await selected(first))!)
-    expect(selectedId).not.toBe(FREE)
+    expect(selectedId).toBe(held ? FREE : HELD)
     await expect.poll(() => scaffold.ctx.agents.get(selectedId)).toBeDefined()
     if (!held) {
       expect(selectedId).toBe(HELD)
@@ -77,7 +77,7 @@ describe.each([false, true])('web e2e: selected blank writer held: %s', (held) =
       await expect(scaffold.ctx.sessionPersistence.open(HELD, 'write'))
         .rejects.toMatchObject({ name: 'SessionAlreadyOwnedError' })
     }
-    const count = held ? 3 : 2
+    const count = 2
     expect(scaffold.ctx.workspaceRegistry.list()[0]!.sessionIds).toHaveLength(count)
 
     const second = await openSavedBlank(selectedId)

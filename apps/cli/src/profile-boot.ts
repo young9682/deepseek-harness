@@ -33,7 +33,7 @@ import { PROFILE_TEMPLATES } from '@deepseek-ai/dsh-official-bundles'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { installProxyFromEnvironment } from '@deepseek-ai/dsh-http-proxy'
 import { DSH_LAUNCH_ENVIRONMENT_KEY, type LaunchEnvironmentSnapshot } from '@deepseek-ai/dsh-launch-environment'
-import { provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
+import { dispatchAppShutdown, provideCmdline, type AppReady } from '@deepseek-ai/dsh-cmdline'
 import { createProcessShutdown, type ProcessShutdown } from './process-shutdown.ts'
 
 const NAME = 'dsh'
@@ -289,6 +289,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   )
 
   const app: { current?: Context } = {}
+  let started = false
   let disposal: Promise<void> | undefined
   const dispose = (): Promise<void> => disposal ??= (async () => {
     const failures: unknown[] = []
@@ -303,7 +304,15 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       options.profile, options.patchFiles, options.fromDefaultProfile, options.resolvedProfile,
     )
     const appReady = createAppReady()
-    const shutdown = createProcessShutdown(dispose)
+    const shutdown = createProcessShutdown(async () => {
+      try {
+        if (started && app.current !== undefined) {
+          await dispatchAppShutdown(app.current, AbortSignal.timeout(1_500))
+        }
+      } finally {
+        await dispose()
+      }
+    })
     const signalShutdown = new AbortController()
     const interrupt = (code: number): void => {
       signalShutdown.abort()
@@ -351,6 +360,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
     if (!signalShutdown.signal.aborted
       && ctx.fiber.state === FiberState.ACTIVE
       && ctx.get('loader') !== undefined) {
+      started = true
       appReady.commit()
     }
     return { ctx, shutdown }

@@ -18,6 +18,7 @@ const ROSTER = webApp.closure([SELF])
 const it = createClientTest({ roster: ROSTER })
 const EVENTS = '$events'
 const CONTROL = 'session/control'
+const DRAFT_CHECK = 'session/observeUnusedBlanks'
 const BASELINE = { type: 'baseline', value: { projections: {} } }
 /** The first client boot pays the cold module transform of the cone. */
 const COLD_BOOT_TIMEOUT_MS = 60_000
@@ -44,6 +45,30 @@ function baselines(accept: MockInstance): number {
 }
 
 describe('Session Controller Client apply', () => {
+  it('returns the browser draft assessment and restores input after a fresh control baseline', async ({ mock, start }) => {
+    const accept = vi.spyOn(ClientSessions.prototype, 'handleControlFrame')
+    const reply = Promise.withResolvers<unknown>()
+    mock.stream(DRAFT_CHECK, async (_args, stream) => {
+      const result = await stream.uplink[Symbol.asyncIterator]().next()
+      if (!result.done) reply.resolve(result.value)
+    })
+    const { client } = await bench(start)
+    const resume = vi.fn()
+    const id = sid('unused')
+    client.ctx.on('client-session/check-unused-blanks', (ids) => {
+      expect(ids).toEqual([id])
+      return { sessionIds: [id], resume }
+    })
+    await mock.streams.opened(DRAFT_CHECK, 1)
+    await vi.waitFor(() => { expect(baselines(accept)).toBe(1) })
+    mock.streams.push(DRAFT_CHECK, [id])
+    await expect(reply.promise).resolves.toEqual([id])
+    expect(resume).not.toHaveBeenCalled()
+
+    client.connection.reconnect()
+    await vi.waitFor(() => { expect(resume).toHaveBeenCalledOnce() })
+  }, COLD_BOOT_TIMEOUT_MS)
+
   it('routes Remote events from the $events stream into the object layer and runs handleConnected once per generation', async ({ mock, start }) => {
     const connected = vi.spyOn(ClientSessions.prototype, 'handleConnected')
     const error = vi.spyOn(ClientSessions.prototype, 'handleSessionError')

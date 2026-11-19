@@ -11,6 +11,7 @@ import {
   mountAgentLoopTestHarness,
 } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { brandString } from '@deepseek-ai/dsh-brand'
+import type { PeerId, PeerScope } from '@deepseek-ai/dsh-typert-protocol'
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -44,6 +45,87 @@ function message(text: string, source: 'user' | 'plugin' = 'user') {
     source: source === 'user' ? { kind: 'user' } : { kind: 'fixture' },
   })
 }
+
+describe('shutdown draft checks', () => {
+  const id = brandString<SessionId>('fresh-blank')
+  const other = brandString<SessionId>('another-session')
+
+  function owner(ctx: Context, signal: AbortSignal): PeerScope {
+    return {
+      id: brandString<PeerId>('browser'),
+      ctx,
+      signal,
+      principal: { kind: 'owner' },
+      interactions: 'answer',
+      dispose: async () => {},
+    }
+  }
+
+  it('only returns nominated ids attested on the connected browser probe', async () => {
+    const { ctx, control } = await harness()
+    const browser = new AbortController()
+    const probe = new AbortController()
+    const peer = owner(ctx, browser.signal)
+    const stream = control.control(browser.signal, peer)[Symbol.asyncIterator]()
+    try {
+      await stream.next()
+      control.rememberBlank(id, peer)
+      const nominated = control.awaitBlankCheck(peer, probe.signal)
+      const ready = control.checkUnusedBlanks(AbortSignal.timeout(2_000))
+      await expect(nominated).resolves.toEqual([id])
+      control.reportUnusedBlanks([other], browser.signal)
+      control.reportUnusedBlanks([id, id, other], probe.signal)
+      await expect(ready).resolves.toEqual([id])
+    } finally {
+      probe.abort()
+      browser.abort()
+      await stream.return?.()
+    }
+  })
+
+  it('preserves candidates when the browser disconnects before attesting', async () => {
+    const { ctx, control } = await harness()
+    const browser = new AbortController()
+    const probe = new AbortController()
+    const peer = owner(ctx, browser.signal)
+    const stream = control.control(browser.signal, peer)[Symbol.asyncIterator]()
+    try {
+      await stream.next()
+      control.rememberBlank(id, peer)
+      const nominated = control.awaitBlankCheck(peer, probe.signal)
+      const ready = control.checkUnusedBlanks(AbortSignal.timeout(2_000))
+      await expect(nominated).resolves.toEqual([id])
+      browser.abort()
+      control.reportUnusedBlanks([id], probe.signal)
+      await expect(ready).resolves.toEqual([])
+    } finally {
+      probe.abort()
+      browser.abort()
+      await stream.return?.()
+    }
+  })
+
+  it('keeps blanks after an additional owner stream even when that stream closes', async () => {
+    const { ctx, control } = await harness()
+    const browser = new AbortController()
+    const otherBrowser = new AbortController()
+    const peer = owner(ctx, browser.signal)
+    const stream = control.control(browser.signal, peer)[Symbol.asyncIterator]()
+    const second = control.control(otherBrowser.signal, peer)[Symbol.asyncIterator]()
+    try {
+      await stream.next()
+      control.rememberBlank(id, peer)
+      await second.next()
+      await second.return?.()
+      await expect(control.checkUnusedBlanks(browser.signal)).resolves.toEqual([])
+    } finally {
+      browser.abort()
+      otherBrowser.abort()
+      await second.return?.()
+      await stream.return?.()
+    }
+  })
+})
 
 describe('Session control Inbox projection', () => {
   /** Consume frames until the next durable Inbox value. */

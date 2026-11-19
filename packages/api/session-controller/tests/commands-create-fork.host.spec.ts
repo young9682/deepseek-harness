@@ -19,6 +19,8 @@ import { SessionCommandController } from '../src/commands.ts'
 import { installSessionReadTestServices, testSessionPersistence } from './test-remote.ts'
 import { brandString } from '@deepseek-ai/dsh-brand'
 
+const ignoreReuse = (): void => {}
+
 async function expectFailure(operation: Promise<unknown>, code: string): Promise<void> {
   await expect(operation).rejects.toMatchObject({ code })
 }
@@ -41,7 +43,11 @@ function controllerAgents(
 function publishedSession(ctx: Context, sessionId: SessionId) {
   return (request: ApiSessionCreateRequest): Promise<ApiSessionCreated> => {
     const session = ctx.sessions.create(sessionId, { meta: { cwd: request.cwd } })
-    return Promise.resolve({ agent: { id: session.id, session, status: 'idle', ctx } as Agent, agentPreset: undefined })
+    return Promise.resolve({
+      agent: { id: session.id, session, status: 'idle', ctx } as Agent,
+      agentPreset: undefined,
+      minted: request.sessionId !== sessionId,
+    })
   }
 }
 
@@ -66,13 +72,13 @@ describe('Session creation failures', () => {
     const createSession = vi.fn(publishedSession(ctx, brandString<SessionId>('session-minted')))
     const controller = new SessionCommandController(ctx, controllerAgents(ctx, { createSession }), '/default-workspace')
 
-    const created = await controller.create({})
+    const created = await controller.create({}, ignoreReuse)
 
-    expect(created).toEqual({ sessionId: 'session-minted' })
+    expect(created).toEqual({ value: { sessionId: 'session-minted' }, minted: true })
     expect(createSession).toHaveBeenCalledOnce()
     const request = createSession.mock.calls[0]?.[0]
     expect(request?.cwd).toBe('/default-workspace')
-    expect(Object.keys(request ?? {}).sort()).toEqual(['cwd', 'reusable'])
+    expect(Object.keys(request ?? {}).sort()).toEqual(['cwd', 'observeReuse', 'reusable'])
     await ctx.fiber.dispose()
   })
 
@@ -86,13 +92,14 @@ describe('Session creation failures', () => {
     )
     await expectFailure(missingController.create({
       workspaceId: 'missing' as WorkspaceId,
-    }), 'workspace/not-found')
+    }, ignoreReuse), 'workspace/not-found')
     await missing.fiber.dispose()
 
     const failed = await baseContext()
     const workspace = {
       id: 'workspace-1' as WorkspaceId,
       path: '/workspace',
+      sessionIds: [],
       attachSession: () => Promise.reject(new Error('read-only workspace')),
     } as unknown as Workspace
     failed.provide('workspaceRegistry', {
@@ -107,7 +114,7 @@ describe('Session creation failures', () => {
     await expectFailure(failedController.create({
       sessionId: brandString<SessionId>('workspace-session'),
       workspaceId: workspace.id,
-    }), 'session/workspace-attach-failed')
+    }, ignoreReuse), 'session/workspace-attach-failed')
     await failed.fiber.dispose()
   })
 
@@ -143,7 +150,7 @@ describe('Session creation failures', () => {
 
     await expectFailure(controller.create({
       sessionId: brandString<SessionId>('failed-create'), cwd: '/requested',
-    }), code)
+    }, ignoreReuse), code)
     await ctx.fiber.dispose()
   })
 
@@ -154,7 +161,7 @@ describe('Session creation failures', () => {
     await expectFailure(controller.create({
       workspaceId: 'workspace-1' as WorkspaceId,
       cwd: '/workspace',
-    }), 'gateway/bad-request')
+    }, ignoreReuse), 'gateway/bad-request')
     await ctx.fiber.dispose()
   })
 

@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { SessionCreateValue } from '@deepseek-ai/dsh-api-session-controller/types'
+import type { WorkspaceCreateValue } from '@deepseek-ai/dsh-api-workspace-controller/types'
 import { chromium } from 'playwright'
 import { expect, it, onTestFailed, onTestFinished } from 'vitest'
 import { REPO_ROOT, newEnglishPage, saveFailureShot, writeComposerDraft } from './support.ts'
@@ -68,13 +70,17 @@ class RestartableServer {
     let forced = false
     const timer = setTimeout(() => { forced = true; child.kill('SIGKILL') }, 15_000)
     try {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM')
+      if (child.exitCode === null && child.signalCode === null) {
+        // Windows terminates the process immediately for SIGTERM.
+        if (process.platform === 'win32' && child.connected) child.send('shutdown')
+        else child.kill('SIGTERM')
+      }
       await this.closed
     } finally {
       clearTimeout(timer)
       this.child = undefined
     }
-    if (forced) throw new Error('Server did not stop after SIGTERM\n' + this.logs())
+    if (forced) throw new Error('Server did not stop after a graceful exit request\n' + this.logs())
   }
 
   resumeStartup(): void {
@@ -244,7 +250,7 @@ it.each([false, true])('keeps the same revision, Session and page across a serve
   expect(navigations).toBe(0)
 })
 
-it('keeps a live blank Session blank across a graceful server restart', async () => {
+it('reuses an unconfirmed blank by Workspace after a graceful server restart', async () => {
   const world = await mkdtemp(join(tmpdir(), 'dsh-server-restart-'))
   onTestFinished(() => rm(world, { recursive: true, force: true }))
   // The scenario runs no model turn, so the model endpoint is never contacted.
@@ -253,20 +259,31 @@ it('keeps a live blank Session blank across a graceful server restart', async ()
   const workspacePath = join(world, 'workspace')
   await mkdir(workspacePath)
   onTestFailed(async () => {
-    await writeFile(join(REPO_ROOT, '.artifacts', 'server-restart-blank-' + randomUUID() + '.json'), JSON.stringify({ server: server.logs() }, null, 2))
+    const output = join(REPO_ROOT, '.artifacts')
+    await mkdir(output, { recursive: true })
+    await writeFile(join(output, 'server-restart-blank-' + randomUUID() + '.json'), JSON.stringify({ server: server.logs() }, null, 2))
   })
 
   const before = await hostRpc(await server.start(0))
-  const { workspace } = await before<{ workspace: { id: string } }>('workspace/create', { request: { path: workspacePath } })
-  const { sessionId } = await before<{ sessionId: string }>('session/create', { request: { workspaceId: workspace.id } })
+  const { workspace } = await before<WorkspaceCreateValue>('workspace/create', { request: { path: workspacePath } })
+  const request = { request: { workspaceId: workspace.workspaceId } }
+  const { sessionId } = await before<SessionCreateValue>('session/create', request)
   const listed = async (rpc: HostRpc) => (await rpc<{
     items: { sessionId: string; blank: boolean; agentAvailable: boolean }[]
-  }>('session/list', { _request: {} })).items.find(item => item.sessionId === sessionId)
-  expect(await listed(before)).toMatchObject({ blank: true, agentAvailable: true })
+  }>('session/list', { _request: {} })).items
+  expect(await listed(before)).toEqual([expect.objectContaining({
+    sessionId, cwd: workspace.path, blank: true, agentAvailable: true,
+  })])
 
   // SIGTERM unloads the Web layer, including the list projection, before its live Session detaches;
   // stopping right after creation also precedes the throttled checkpoint of the Session's setup events.
   await server.stop()
   const after = await hostRpc(await server.start(0))
-  expect(await listed(after)).toMatchObject({ blank: true, agentAvailable: false })
+  expect(await listed(after)).toEqual([expect.objectContaining({ sessionId, blank: true, agentAvailable: false })])
+  const reopened = await Promise.all([
+    after<SessionCreateValue>('session/create', request),
+    after<SessionCreateValue>('session/create', request),
+  ])
+  expect(reopened.map(item => item.sessionId)).toEqual([sessionId, sessionId])
+  expect(await listed(after)).toEqual([expect.objectContaining({ sessionId, blank: true, agentAvailable: true })])
 })

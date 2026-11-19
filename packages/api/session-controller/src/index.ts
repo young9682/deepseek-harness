@@ -9,11 +9,12 @@ import z from '@deepseek-ai/schemastery'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import { errorChain, type ReasoningEffortId, type MessageSource } from '@deepseek-ai/dsh-llm'
 import type {} from '@deepseek-ai/dsh-client-file-upload'
+import type {} from '@deepseek-ai/dsh-cmdline'
 import { canOpenNativePath, nativeFileManager, nativeFileApplications, openNativeFileApplication, openNativeAssociatedPath, revealNativePath } from '@deepseek-ai/dsh-native-command'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-projection-cache'
 import type { SessionObservation } from '@deepseek-ai/dsh-session-query'
-import { Remote, RemoteError, TypertRemoteService, principalOf } from '@deepseek-ai/dsh-typert-protocol'
+import { Remote, RemoteError, TypertRemoteService, principalOf, type RemoteStream } from '@deepseek-ai/dsh-typert-protocol'
 import { canonicalClientTimeZone } from '@deepseek-ai/dsh-util-time'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import type {} from '@deepseek-ai/dsh-api-remote-access'
@@ -174,6 +175,17 @@ export class SessionController extends TypertRemoteService {
       return result.agent
     }), 'session-controller: file-upload Agent resolver')
     this.controlState = new SessionControlController(ctx)
+    ctx.on('app/before-shutdown', async (signal) => {
+      if (!ctx.sessionPersistence.supportsDeletion) return
+      for (const id of await this.controlState.checkUnusedBlanks(signal)) {
+        if (signal.aborted) break
+        try {
+          await this.commands.deleteUnusedBlank(id, () => !signal.aborted && this.controlState.canClean(id))
+        } catch (error) {
+          ctx.logger.warn('Unused Session cleanup failed for %s: %o', id, error)
+        }
+      }
+    })
     // Registered before history so reverse-order teardown closes every
     // follower before waiting for already-admitted promotions.
     ctx.effect(() => async () => {
@@ -220,6 +232,7 @@ export class SessionController extends TypertRemoteService {
       ctx.emit('api-session/error', agent.id, errorChain(error))
     })
     ctx.on('session/event', (session, event) => {
+      if (event.type === 'turn/start') this.controlState.forgetBlank(session.id)
       if (event.type !== 'user/message' || event.data.source.kind !== 'user') return
       ctx.emit('api-session/activity', session.id, event.time)
     })
@@ -278,13 +291,21 @@ export class SessionController extends TypertRemoteService {
   }
 
   /**
-   * Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.
+   * Prepare one ordinary Session, reusing an available Workspace blank before creating another.
    * @param request - optional blank Session to reuse, location, and Agent preset.
    * @returns the created or reused Session identity and its preset when configured.
    */
   @Remote('create')
-  create(request: SessionCreateRequest): Promise<SessionCreateValue> {
-    return this.commands.create(request)
+  async create(request: SessionCreateRequest): Promise<SessionCreateValue> {
+    const peer = this.ctx.invocation?.peer
+    if (request.sessionId !== undefined) this.controlState.observeBlankUse(request.sessionId, peer)
+    const { value, minted } = await this.commands.create(request, (id) => {
+      this.controlState.observeBlankUse(id, peer)
+    })
+    if (minted && peer !== undefined) {
+      this.controlState.rememberBlank(value.sessionId, peer)
+    }
+    return value
   }
 
   /**
@@ -598,6 +619,7 @@ export class SessionController extends TypertRemoteService {
    */
   @Remote({ mode: 'stream' })
   follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
+    if (request.address.kind === 'session') this.controlState.observeBlankUse(request.address.sessionId, this.ctx.invocation?.peer)
     return this.webController.follow(request, signal)
   }
 
@@ -619,7 +641,9 @@ export class SessionController extends TypertRemoteService {
    */
   @Remote({ mode: 'stream' })
   async *control(signal: AbortSignal): AsyncIterable<SessionControlFrame> {
-    for await (const frame of this.controlState.control(signal)) {
+    const invocation = this.ctx.invocation
+    const peer = principalOf(invocation) === undefined ? invocation?.peer : null
+    for await (const frame of this.controlState.control(signal, peer)) {
       switch (frame.type) {
         case 'baseline': {
           const projections = Object.fromEntries(Object.entries(frame.value.projections)
@@ -634,6 +658,24 @@ export class SessionController extends TypertRemoteService {
         default:
           assertNever(frame)
       }
+    }
+  }
+
+  /**
+   * Ask the browser about nominated unused blanks during process shutdown.
+   * @param signal - lifetime of this authenticated Remote stream.
+   * @returns one candidate list and an uplink for the confirmed empty Sessions.
+   */
+  @Remote({ mode: 'stream' })
+  async *observeUnusedBlanks(signal: AbortSignal): RemoteStream<readonly SessionId[], readonly SessionId[]> {
+    const invocation = this.ctx.invocation
+    if (invocation === undefined || principalOf(invocation) !== undefined) return
+    const ids = await this.controlState.awaitBlankCheck(invocation.peer, signal)
+    if (ids === undefined) return
+    yield ids
+    for await (const sessionIds of invocation.uplink<readonly SessionId[]>()) {
+      this.controlState.reportUnusedBlanks(sessionIds, signal)
+      break
     }
   }
 }

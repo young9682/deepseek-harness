@@ -904,11 +904,11 @@ resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult>
 @Remote('search') async search(request: SessionSearchRequest, signal: AbortSignal): Promise<SessionSearchValue>
 
 /**
- * Create one ordinary Session for a new conversation, reusing the named blank Session while it is reusable.
+ * Prepare one ordinary Session, reusing an available Workspace blank before creating another.
  * @param request - optional blank Session to reuse, location, and Agent preset.
  * @returns the created or reused Session identity and its preset when configured.
  */
-@Remote('create') create(request: SessionCreateRequest): Promise<SessionCreateValue>
+@Remote('create') async create(request: SessionCreateRequest): Promise<SessionCreateValue>
 
 /**
  * Permanently delete one ordinary Session and its stored log.
@@ -1082,9 +1082,16 @@ workspaceDesktop(): { name: string; available: boolean; fileManager: 'finder' | 
  * @returns one complete baseline followed by live replacement frames.
  */
 @Remote({ mode: 'stream' }) async *control(signal: AbortSignal): AsyncIterable<SessionControlFrame>
+
+/**
+ * Ask the browser about nominated unused blanks during process shutdown.
+ * @param signal - lifetime of this authenticated Remote stream.
+ * @returns one candidate list and an uplink for the confirmed empty Sessions.
+ */
+@Remote({ mode: 'stream' }) async *observeUnusedBlanks(signal: AbortSignal): RemoteStream<readonly SessionId[], readonly SessionId[]>
 ```
 
-Types: [SessionId](core.md) · [SessionSearchRequest](session-query.md)
+Types: [RemoteStream](typert.md) · [SessionId](core.md) · [SessionSearchRequest](session-query.md)
 
 Source: [`packages/api/session-controller/src/index.ts`](../../packages/api/session-controller/src/index.ts)
 

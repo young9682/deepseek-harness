@@ -168,7 +168,13 @@ describe('runProfile with an application-owned profile', () => {
       expect(ctx.profileContext).toMatchObject({
         dir: home, patchPath: profilePatch, installAnchor: runtime.installAnchor, overlayPaths: [overlay],
       })
+      const beforeShutdown = vi.fn((signal: AbortSignal) => {
+        expect(signal.aborted).toBe(false)
+        expect(dispose).not.toHaveBeenCalled()
+      })
+      ctx.on('app/before-shutdown', beforeShutdown)
       await shutdown.shutdown(0)
+      expect(beforeShutdown).toHaveBeenCalledOnce()
       expect(dispose).toHaveBeenCalledOnce()
       expect(disposeProxy).toHaveBeenCalledOnce()
     } finally {

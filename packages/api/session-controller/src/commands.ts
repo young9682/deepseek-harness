@@ -25,7 +25,7 @@ import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-ses
 import { SessionTitleInvalidError } from '@deepseek-ai/dsh-session-title'
 import { assertNever } from '@deepseek-ai/dsh-util-values'
 import { RemoteError, remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol'
-import type { Workspace } from '@deepseek-ai/dsh-workspace'
+import type { Workspace, WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import {
   ApiSessionAgentController,
   ApiSessionCwdConflict,
@@ -61,6 +61,12 @@ type PromptContentCandidate =
   | SessionPromptRequest['content'][number]
   | Extract<SessionUpdateQueueRequest['action'], { readonly kind: 'edit' }>['content'][number]
 
+// Presets and defaults may initialize a blank without using it. Optional
+// plugins augment the event map at runtime.
+const blankInitializationEvents: ReadonlySet<string> = new Set([
+  'permission/preset', 'sandbox/mode', 'approval/policy', 'agent-preset/selected', 'model/selection',
+])
+
 /**
  * Whether prompt content carries non-whitespace text or an attachment.
  * @param content - submitted or edited prompt parts.
@@ -88,6 +94,7 @@ function latestCompletedPrefixBoundary(events: readonly SessionEvent[]): Session
 
 /** Implements Session business commands delegated by the Session Controller Remote service. */
 export class SessionCommandController {
+  private readonly workspaceCreates = new Map<WorkspaceId, Promise<void>>()
   /** First-insertion facts cached per exact Session; the log remains the recovery source. */
   private readonly promptReceipts = new WeakMap<Session, {
     offset: SessionLogOffset
@@ -114,24 +121,40 @@ export class SessionCommandController {
   ) {}
 
   /**
-   * Create one ordinary Session for a new conversation, reusing the named
-   * blank Session while it is an unarchived member of the requested Workspace.
+   * Prepare one ordinary Session for a new conversation. Workspace requests
+   * prefer a reusable member and serialize selection through attachment.
    * @param request - optional blank Session to reuse, location, and Agent preset.
-   * @returns the created or reused Session identity and its preset when configured.
+   * @param observeReuse - record an automatically chosen Session inside its lifecycle claim.
+   * @returns the reply and whether the Host minted the Session identity.
    */
-  async create(request: SessionCreateRequest): Promise<SessionCreateValue> {
+  async create(
+    request: SessionCreateRequest,
+    observeReuse: (sessionId: SessionId) => void,
+  ): Promise<{ value: SessionCreateValue; minted: boolean }> {
     if (request.workspaceId !== undefined && request.cwd !== undefined) {
       throw new RemoteError('gateway/bad-request', 'session.create accepts workspaceId or cwd, not both', {})
     }
-    let workspace: Workspace | undefined
-    if (request.workspaceId !== undefined) {
-      workspace = this.ctx.workspaceRegistry.get(request.workspaceId)
-      if (workspace === undefined) {
-        throw new RemoteError('workspace/not-found', `workspace "${request.workspaceId}" not found`, {
-          workspaceId: request.workspaceId,
-        })
-      }
+    const id = request.workspaceId
+    if (id === undefined) return this.createPlaced(request, observeReuse)
+    const result = (this.workspaceCreates.get(id) ?? Promise.resolve()).then(() => {
+      const workspace = this.ctx.workspaceRegistry.get(id)
+      if (workspace !== undefined) return this.createPlaced(request, observeReuse, workspace)
+      throw new RemoteError('workspace/not-found', `workspace "${id}" not found`, { workspaceId: id })
+    })
+    const settled = result.then(() => undefined, () => undefined)
+    this.workspaceCreates.set(id, settled)
+    try {
+      return await result
+    } finally {
+      if (this.workspaceCreates.get(id) === settled) this.workspaceCreates.delete(id)
     }
+  }
+
+  private async createPlaced(
+    request: SessionCreateRequest,
+    observeReuse: (sessionId: SessionId) => void,
+    workspace?: Workspace,
+  ): Promise<{ value: SessionCreateValue; minted: boolean }> {
     const cwd = workspace?.path ?? request.cwd ?? this.defaultCwd
     let created: ApiSessionCreated
     try {
@@ -139,6 +162,8 @@ export class SessionCommandController {
         ...(request.sessionId === undefined ? {} : { sessionId: request.sessionId }),
         cwd,
         ...(request.agentPreset === undefined ? {} : { agentPreset: request.agentPreset }),
+        ...(workspace === undefined ? {} : { alternatives: workspace.sessionIds.toReversed() }),
+        observeReuse,
         reusable: sessionId => !this.ctx.workspaceRegistry.archivedSessionIds.includes(sessionId)
           && (workspace === undefined || workspace.sessionIds.includes(sessionId)),
       })
@@ -157,7 +182,8 @@ export class SessionCommandController {
         )
       }
     }
-    return { sessionId, ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }) }
+    const value = { sessionId, ...(created.agentPreset === undefined ? {} : { agentPreset: created.agentPreset }) }
+    return { value, minted: created.minted }
   }
 
   /**
@@ -185,7 +211,27 @@ export class SessionCommandController {
     return this.agents.serializeSessionLifecycle(request.sessionId, () => this.deleteClaimed(request))
   }
 
-  private async deleteClaimed(request: SessionDeleteRequest): Promise<SessionDeleteValue> {
+  /**
+   * Remove a shutdown candidate only while its browser attestation and unused log still hold.
+   * @param sessionId - freshly minted identity attested by its browser.
+   * @param eligible - whether the browser attestation is still current.
+   */
+  async deleteUnusedBlank(sessionId: SessionId, eligible: () => boolean): Promise<void> {
+    await this.agents.serializeSessionLifecycle(sessionId, async () => {
+      const session = this.ctx.sessions.get(sessionId)
+      if (session === undefined || session.header.isSeeded || !eligible()) return
+      const cursor = session.seq
+      using observation = await this.ctx.sessionQuery.observeSession(sessionId, { projectionMode: 'none' })
+      if (observation.source !== 'live'
+        || observation.cursor !== cursor - 1
+        || this.ctx.sessions.get(sessionId) !== session
+        || !observation.events.every(event => blankInitializationEvents.has(event.type))) return
+      const unused = (): boolean => eligible() && session.seq === cursor
+      if (unused()) await this.deleteClaimed({ sessionId }, unused)
+    })
+  }
+
+  private async deleteClaimed(request: SessionDeleteRequest, unused?: () => boolean): Promise<SessionDeleteValue> {
     const { sessionId } = request
     if (this.ctx.workspaceRegistry.isArchived(sessionId)) {
       throw new RemoteError(
@@ -221,6 +267,13 @@ export class SessionCommandController {
       await this.ctx.parallel('workspace/session-stop', { sessionId })
     }
 
+    const requireUnused = (): void => {
+      if (unused === undefined || unused()) return
+      throw new RemoteError('session/delete-unavailable', 'The Session is no longer an unused blank', {
+        sessionId, reason: 'shutdown cleanup eligibility changed',
+      })
+    }
+    requireUnused()
     // Decisive teardown: disposing the retained handle removes the Session from
     // the store (emitting `session/disposed`, whose persistence listener drains
     // and closes the write handle) before anything on disk is removed.
@@ -232,6 +285,7 @@ export class SessionCommandController {
         { sessionId, reason: 'the live Agent is not owned by this API host' },
       )
     }
+    requireUnused()
 
     try {
       await persistence.delete(sessionId)

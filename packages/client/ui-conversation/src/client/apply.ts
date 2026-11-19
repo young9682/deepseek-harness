@@ -296,6 +296,7 @@ export function apply(ctx: Context, config: SyncedConfig<ConversationConfig>): v
   })
 
   const inputHub = new InputHub(ctx, t)
+  ctx.on('client-session/check-unused-blanks', ids => inputHub.checkUnusedBlanks(ids))
   const composerBlocks = new ComposerBlockRegistry()
 
   ctx.inject(['commandUi'], (scope) => {

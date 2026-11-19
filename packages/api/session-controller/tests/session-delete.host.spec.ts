@@ -121,6 +121,38 @@ function liveSession(b: DeleteHarness, id: string): Session {
   return session
 }
 
+describe('unused blank shutdown cleanup', () => {
+  it('deletes an untouched Session through normal teardown', async () => {
+    const b = await harness()
+    try {
+      const blank = liveSession(b, 'unused')
+      await b.controller.deleteUnusedBlank(blank.id, () => true)
+      expect(b.order).toEqual([
+        'disposeLive:unused', 'persistence.delete:unused', 'checkpoint.delete', 'forgetSession:unused',
+      ])
+      expect(b.stops).toEqual([])
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+
+  it('preserves the log if a turn starts during teardown', async () => {
+    const b = await harness()
+    try {
+      const blank = liveSession(b, 'started')
+      b.doubles.disposeLive = async () => {
+        blank.append('turn/start', { turn: 1 })
+        return true
+      }
+      await expect(b.controller.deleteUnusedBlank(blank.id, () => true))
+        .rejects.toMatchObject({ code: 'session/delete-unavailable' })
+      expect(b.persistenceDelete).not.toHaveBeenCalled()
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+})
+
 describe('session.delete refusals', () => {
   it('keeps the Session live when its storage backend does not support deletion', async () => {
     const b = await harness(false)

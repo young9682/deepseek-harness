@@ -35,6 +35,8 @@ kind: "package-library"
 - `ctx.appExit`——在整棵树关闭后请求进程退出的方式，接到启动器的关停控制器上。
 - `ctx.appReady`——成功启动信号，只在 Loader 树与启动器自有设置成功后提交。
 
+启动成功后，启动器在正常退出时等待 `app/before-shutdown`，此时应用服务仍然可用。监听器通过中止信号得知退出阶段的剩余时间预算。
+
 没有参数的启动会看到空列表——这是诚实的答案，而不是缺失的值。
 
 `exitOnStdinEnd(ctx, label)` 把已成功启动的 stdio 应用 EOF 绑定到 `ctx.appExit(0)`。它绝不读取或恢复 stdin，因此协议传输会收到挂载前已缓冲的字节；启动拒绝优先于竞态 EOF，所属 fiber 会移除两个待处理的监听器。

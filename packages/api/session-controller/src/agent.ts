@@ -50,8 +50,10 @@ export class ApiSessionPresetConflict extends Error {
   }
 }
 
-/** A blank Session chosen for reuse started a turn before this Host acquired its writer. */
-class ApiSessionStartedSinceObserved extends Error {}
+/** A blank Session stopped qualifying before this Host acquired its writer. */
+class ApiSessionReuseChanged extends Error {}
+
+const reuseListKeys = new Set(['sessionListMetadata'] as const)
 
 /** Placement and Agent preset for one Session created for a new conversation. */
 export interface ApiSessionCreateRequest {
@@ -67,6 +69,10 @@ export interface ApiSessionCreateRequest {
    * @returns whether that Session may be reused.
    */
   readonly reusable: (sessionId: SessionId) => boolean
+  /** Other Workspace members to try before minting a Session, in fallback order. */
+  readonly alternatives?: readonly SessionId[]
+  /** Record an automatically reused Session before releasing its lifecycle claim. */
+  readonly observeReuse: (sessionId: SessionId) => void
 }
 
 /** The Session one creation request created or reused. */
@@ -75,6 +81,8 @@ export interface ApiSessionCreated {
   readonly agent: Agent
   /** Preset the Session ran when the request finished, before a later request for the same identity; absent without a roster. */
   readonly agentPreset: string | undefined
+  /** Whether this request minted an identity that had no prior draft. */
+  readonly minted: boolean
 }
 
 /** Resolved preset and pre-publication Agent setup for one create or resume. */
@@ -222,9 +230,8 @@ export class ApiSessionAgentController {
    * while it is still reusable. A reused Session runs the requested preset, or
    * the configured default when the request names none; the preset it recorded
    * is not resolved, and a change is logged as `agent-preset/selected` before
-   * the Agent is published. A named Session that has started a turn, fails the
-   * caller's placement rule, or is written by another owner stays unchanged,
-   * and a new Session is created instead. Requests naming one identity run in
+   * the Agent is published. If the named Session cannot be reused, try other
+   * eligible Workspace members before creating a new Session. Requests naming one identity run in
    * arrival order, including their preset resolution, and check the named
    * Session's directory and ownership before resolving the preset.
    * @param request - optional Session to reuse, directory, preset, and placement rule.
@@ -236,8 +243,28 @@ export class ApiSessionAgentController {
    */
   async createSession(request: ApiSessionCreateRequest): Promise<ApiSessionCreated> {
     const named = request.sessionId
-    if (named === undefined) return this.created(await this.createMinted(request.cwd, await this.composeAgent(request.agentPreset)))
-    return this.inOrder(named, async () => this.created(await this.claim(named, request)))
+    if (named !== undefined) {
+      const selected = await this.claimInOrder(named, request, 'named')
+      if (selected !== undefined) return selected
+    }
+    for (const id of request.alternatives ?? []) {
+      if (id === named || !request.reusable(id)) continue
+      const reused = await this.claimInOrder(id, request, 'alternate')
+      if (reused !== undefined) return reused
+    }
+    const minted = await this.createMinted(request.cwd, await this.composeAgent(request.agentPreset))
+    return this.created(minted, true)
+  }
+
+  private claimInOrder(
+    id: SessionId, request: ApiSessionCreateRequest, kind: 'named' | 'alternate',
+  ): Promise<ApiSessionCreated | undefined> {
+    return this.inOrder(id, async () => {
+      const agent = await this.claim(id, request, kind)
+      if (agent === undefined) return undefined
+      if (kind === 'alternate') request.observeReuse(id)
+      return this.created(agent, false)
+    })
   }
 
   /**
@@ -350,54 +377,74 @@ export class ApiSessionAgentController {
     }
   }
 
-  /** @returns the reused Session, a new Session under `sessionId` when none is stored, or a new Session under a minted identity. */
-  private async claim(sessionId: SessionId, request: ApiSessionCreateRequest): Promise<Agent> {
+  /** @returns the usable Session, or undefined when another candidate is needed. */
+  private async claim(
+    sessionId: SessionId,
+    request: ApiSessionCreateRequest,
+    kind: 'named' | 'alternate',
+  ): Promise<Agent | undefined> {
     const attached = this.ctx.sessions.get(sessionId)
     const live = this.ctx.agents.get(sessionId)
     if (attached !== undefined && hasApiSessionSubagentOwner(attached)) {
+      if (kind === 'alternate') return undefined
       throw new ApiSessionSubagentOwnership(sessionId)
     }
     if (live !== undefined) {
+      if (kind === 'alternate' && !this.isBlank(live.session)) return undefined
       if (!await this.namesDirectory(live.session.header.cwd, request.cwd)) {
+        if (kind === 'alternate') return undefined
         throw new ApiSessionCwdConflict(live.id, request.cwd, live.session.header.cwd)
       }
       const composition = await this.composeAgent(request.agentPreset)
-      return await this.reuseLive(live, request, composition) ?? this.createMinted(request.cwd, composition)
+      return this.reuseLive(live, request, composition, kind)
+    }
+    if (kind === 'alternate' && attached === undefined) {
+      const stored = await this.ctx.sessionPersistence.stat(sessionId)
+      if (stored === undefined) return undefined
+      const cached = this.ctx.get('sessionProjectionCache')?.cachedSnapshot(stored.header, reuseListKeys)
+      if (cached?.values.sessionListMetadata?.blank === false) return undefined
     }
     let observation: SessionObservation
     try {
-      observation = await this.ctx.sessionQuery.observeSession(sessionId)
+      observation = await this.ctx.sessionQuery.observeSession(sessionId, {
+        projectionMode: kind === 'alternate' && request.agentPreset !== undefined ? 'all' : 'none',
+      })
     } catch (error: unknown) {
       if (!(error instanceof SessionQueryError) || error.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error
+      if (kind === 'alternate') return undefined
       return this.createAgent(sessionId, request.cwd, await this.composeAgent(request.agentPreset))
     }
     let reusable: boolean
     {
       using observed = observation
       if (hasApiSessionSubagentOwner({ header: observed.header })) {
+        if (kind === 'alternate') return undefined
         throw new ApiSessionSubagentOwnership(sessionId)
       }
       if (!await this.namesDirectory(observed.header.cwd, request.cwd)) {
+        if (kind === 'alternate') return undefined
         throw new ApiSessionCwdConflict(sessionId, request.cwd, observed.header.cwd)
       }
       reusable = request.reusable(sessionId) && !observed.events.some(event => event.type === 'turn/start')
+        && (kind === 'named' || request.agentPreset === undefined
+          || this.matchesPreset(this.presetForObservation(observed), request.agentPreset))
     }
+    if (!reusable) return undefined
     const composition = await this.composeAgent(request.agentPreset)
-    if (!reusable) return this.createMinted(request.cwd, composition)
-    this.assertPresetApplicable(sessionId, request.agentPreset)
+    if (kind === 'named') this.assertPresetApplicable(sessionId, request.agentPreset)
     try {
       return this.retainHandle(await this.ctx.agents.resume({
         resumeSessionId: sessionId,
         agentOptions: this.agentOptions(),
-        setup: this.reuseSetup(composition),
+        setup: this.reuseSetup(composition, request, kind),
       }))
     } catch (error: unknown) {
-      if (error instanceof ApiSessionStartedSinceObserved) return this.createMinted(request.cwd, composition)
+      if (error instanceof ApiSessionReuseChanged) return undefined
       if (!(error instanceof Error) || error.name !== 'SessionAlreadyOwnedError') throw error
       // Another resume in this process may hold the writer for the Agent it published.
       return this.ctx.agents.get(sessionId) === undefined
-        ? this.createMinted(request.cwd, composition)
-        : this.claim(sessionId, request)
+        ? undefined
+        : this.claim(sessionId, request, kind)
     }
   }
 
@@ -406,10 +453,12 @@ export class ApiSessionAgentController {
     live: Agent,
     request: ApiSessionCreateRequest,
     composition: ApiSessionComposition,
+    kind: 'named' | 'alternate',
   ): Promise<Agent | undefined> {
     if (!request.reusable(live.id) || !this.isBlank(live.session)) return undefined
-    this.assertPresetApplicable(live.id, request.agentPreset)
     const current = this.presetForSession(live.session)
+    if (kind === 'alternate' && !this.matchesPreset(current, request.agentPreset)) return undefined
+    if (kind === 'named') this.assertPresetApplicable(live.id, request.agentPreset)
     const presets = this.ctx.get('agentPresets')
     const target = composition.agentPreset
     if (presets === undefined || target === undefined || target === current) return live
@@ -422,10 +471,17 @@ export class ApiSessionAgentController {
     return live
   }
 
-  /** Setup that re-checks blankness under the acquired writer, then records a preset change before publication. */
-  private reuseSetup(composition: ApiSessionComposition): AgentSetup {
+  /** Setup that re-checks eligibility under the acquired writer before publication. */
+  private reuseSetup(
+    composition: ApiSessionComposition,
+    request: ApiSessionCreateRequest,
+    kind: 'named' | 'alternate',
+  ): AgentSetup {
     return async (agentCtx, agent) => {
-      if (!this.isBlank(agent.session)) throw new ApiSessionStartedSinceObserved()
+      if (!request.reusable(agent.id) || !this.isBlank(agent.session)
+        || (kind === 'alternate' && !this.matchesPreset(this.presetForSession(agent.session), request.agentPreset))) {
+        throw new ApiSessionReuseChanged()
+      }
       const commit = await composition.setup(agentCtx, agent)
       const target = composition.agentPreset
       if (target !== undefined && this.presetForSession(agent.session) !== target) {
@@ -433,6 +489,10 @@ export class ApiSessionAgentController {
       }
       return commit
     }
+  }
+
+  private matchesPreset(current: string | undefined, requested: string | undefined): boolean {
+    return current === undefined || requested === undefined || current === requested
   }
 
   /** Whether no turn has started, by the predicate the preset registry's `select` enforces. */
@@ -447,8 +507,8 @@ export class ApiSessionAgentController {
     throw new ApiSessionPresetConflict(sessionId, requested)
   }
 
-  private created(agent: Agent): ApiSessionCreated {
-    return { agent, agentPreset: this.presetForSession(agent.session) }
+  private created(agent: Agent, minted: boolean): ApiSessionCreated {
+    return { agent, agentPreset: this.presetForSession(agent.session), minted }
   }
 
   private createMinted(cwd: string, composition: ApiSessionComposition): Promise<Agent> {
