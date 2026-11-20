@@ -559,7 +559,6 @@ describe('CI workflow', () => {
     // half-close tests are stabilized; observational stays out too.
     expect(windowsAggregate.needs).toEqual(['windows-publisher', 'windows-build', 'windows-native-tests'])
     expect(windowsAggregate.name).toBe('windows checks passed')
-    expect(windowsAggregate['runs-on']).toBe(aggregate['runs-on'])
     expect(windowsAggregate.if).toBe(aggregate.if)
     // The benchmark lane is a required verdict input and runs alone so its
     // wall-clock budgets never share a runner with a concurrent aggregate.
@@ -602,13 +601,21 @@ describe('CI workflow', () => {
       linuxAggregate: aggregate['runs-on'] as string,
       windows: windowsBuild['runs-on'] as string,
     }
-    const evaluate = (expression: string, vars: Record<string, string>, login = 'maintainer'): unknown => {
+    const evaluate = (expression: unknown, vars: Record<string, string>, login = 'maintainer'): unknown => {
       return evaluateRunsOn(expression, {
         vars,
         fromJSON: JSON.parse,
         github: { event: { pull_request: { user: { login } } } },
       })
     }
+    for (const linuxMode of ['', 'blacksmith', 'selfhosted']) {
+      const vars = { DSH_CI_FAILOVER_LINUX: linuxMode }
+      expect(evaluate(windowsAggregate['runs-on'], vars)).toEqual(evaluate(selectors.linuxAggregate, vars))
+    }
+    expect(evaluate(windowsAggregate['runs-on'], {
+      DSH_CI_FAILOVER_WINDOWS: 'github-hosted',
+      DSH_CI_FAILOVER_LINUX: 'selfhosted',
+    })).toBe('ubuntu-latest')
     for (const [name, selector, variable, pool, hosted] of [
       ['linux gates', selectors.linux, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'dsh-ubuntu-24-04-16core'],
       ['linux aggregate', selectors.linuxAggregate, 'DSH_CI_FAILOVER_LINUX', ['self-hosted', 'linux', 'x64', 'vm-backup'], 'ubuntu-latest'],
@@ -637,6 +644,11 @@ describe('CI workflow', () => {
     // out the multi-minute instrumented coverage run.
     expect(windowsBuild.env, 'windows-build must enable fail-fast').toMatchObject({ DSH_GATE_FAIL_FAST: '1' })
     expect(windowsCoverage.env, 'windows-coverage must enable fail-fast').toMatchObject({ DSH_GATE_FAIL_FAST: '1' })
+    if (!isRecord(windowsCoverage.env)) throw new TypeError('Windows coverage must define its environment')
+    expect(evaluate(windowsCoverage.env.DSH_COVERAGE_TEST_TIMEOUT_MS, {
+      DSH_CI_FAILOVER_WINDOWS: 'github-hosted',
+    })).toBe('240000')
+    expect(evaluate(windowsCoverage.env.DSH_COVERAGE_TEST_TIMEOUT_MS, {})).toBe('90000')
 
     // The observational lane stays complete: it is continue-on-error by design
     // and exists to collect as much Windows-native evidence per run as

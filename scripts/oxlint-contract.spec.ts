@@ -1,7 +1,7 @@
 /**
  * Executable lint checks use private copies of repository sources and configuration.
- * Process-spawning cases set Vitest's case timeout to 90 seconds, including
- * plain local runs without a CI override. Configuration-only cases keep the default.
+ * Process-spawning cases and fixture hooks use at least 90 seconds and allow
+ * a larger CI coverage budget. Configuration-only cases keep the default.
  */
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -12,12 +12,16 @@ import { basename, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { flattenDiagnosticMessageText, parseConfigFileTextToJson } from 'typescript'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { COVERAGE_TEST_TIMEOUT_ENV, parseCoverageTestTimeout } from './coverage-partitions.ts'
 
 const sourceRepositoryRoot = fileURLToPath(new URL('..', import.meta.url))
+const contractTimeout = Math.max(90_000, parseCoverageTestTimeout(process.env[COVERAGE_TEST_TIMEOUT_ENV]) ?? 0)
+const staging = new AbortController()
 let repositoryRoot = ''
+let staged = Promise.resolve()
 
 // Probes belong to a private copy: repository compiler scans run in other workers and processes.
-beforeAll(async () => {
+async function stageRepository(): Promise<void> {
   repositoryRoot = await mkdtemp(join(tmpdir(), 'dsh-oxlint-contract-'))
   repositoryRoot = await realpath(repositoryRoot)
   const files = [
@@ -29,18 +33,28 @@ beforeAll(async () => {
     await cp(join(sourceRepositoryRoot, path), join(repositoryRoot, path), {
       recursive: true,
       async filter(source) {
+        staging.signal.throwIfAborted()
         if (['node_modules', 'lib', '.typecheck'].includes(basename(source))) return false
         return (await lstat(source)).isDirectory() || /\.(?:json|[cm]?[jt]sx?)$/u.test(source) || source.endsWith('lefthook.yml')
       },
     })
   }
+  staging.signal.throwIfAborted()
   await symlink(join(sourceRepositoryRoot, 'node_modules'), join(repositoryRoot, 'node_modules'),
     process.platform === 'win32' ? 'junction' : 'dir')
-}, 90_000)
+}
+
+beforeAll(() => {
+  staged = stageRepository()
+  return staged
+}, contractTimeout)
 
 afterAll(async () => {
-  if (repositoryRoot !== '') await rm(repositoryRoot, { recursive: true, force: true })
-}, 90_000)
+  staging.abort()
+  // After a timeout, wait for the pending copy before removing the fixture.
+  await Promise.allSettled([staged])
+  if (repositoryRoot !== '') await rm(repositoryRoot, { recursive: true, force: true, maxRetries: 3 })
+}, contractTimeout)
 const oxlintCli = fileURLToPath(new URL('../node_modules/oxlint/bin/oxlint', import.meta.url))
 const tsxCli = fileURLToPath(new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url))
 
@@ -139,7 +153,7 @@ probePromise()
         rm(configPath, { force: true }),
       ])
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it('runs JavaScript compatibility and nursery rules', async () => {
     const suffix = randomUUID()
@@ -186,7 +200,7 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
         rm(configPath, { force: true }),
       ])
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it('keeps the complete stylistic contract in Oxlint', async () => {
     const oxlintPath = join(repositoryRoot, '.oxlintrc.json')
@@ -239,7 +253,7 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
 
     expect(result.error).toBeUndefined()
     expect(result.status, normalizedOutput(result)).toBe(0)
-  }, 90_000)
+  }, contractTimeout)
 
   it('keeps repository lint workflows Oxlint-only', async () => {
     const packageJson: unknown = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8'))
@@ -286,7 +300,7 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
         rm(configPath, { force: true }),
       ])
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it('allows Session history reads only in tests or with existing-call waivers', async () => {
     const suffix = randomUUID()
@@ -379,7 +393,7 @@ export function unrelatedRead(): void {
         rm(configPath, { force: true }),
       ])
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it('accepts an ignored-only staged selection', () => {
     const result = runOxlint([
@@ -390,7 +404,7 @@ export function unrelatedRead(): void {
 
     expect(result.error).toBeUndefined()
     expect(result.status, normalizedOutput(result)).toBe(0)
-  }, 90_000)
+  }, contractTimeout)
 
   it('keeps staged validation project-free while preserving source rules', async () => {
     const configPath = join(repositoryRoot, '.oxlintrc.staged.json')
@@ -426,7 +440,7 @@ export function unrelatedRead(): void {
     } finally {
       await rm(path, { force: true })
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it('preserves successful fix output channels', async () => {
     const suffix = randomUUID()
@@ -450,7 +464,7 @@ export function unrelatedRead(): void {
     } finally {
       await rm(path, { force: true })
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it('prints only the final diagnostics when a fix retry still fails', async () => {
     const suffix = randomUUID()
@@ -474,7 +488,7 @@ export function unrelatedRead(): void {
     } finally {
       await rm(path, { force: true })
     }
-  }, 90_000)
+  }, contractTimeout)
 
   it.each(['--fix', '--fix-suggestions', '--fix-dangerously'])(
     'converges overlapping staged stylistic fixes through Oxlint under %s',
@@ -498,6 +512,6 @@ export function unrelatedRead(): void {
         await rm(directory, { recursive: true, force: true })
       }
     },
-    90_000,
+    contractTimeout,
   )
 })

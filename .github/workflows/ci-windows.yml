@@ -171,7 +171,8 @@ jobs:
       DSH_COVERAGE_MAX_WORKERS: ${{ vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '6' || '' }}
       DSH_COVERAGE_PARTITIONS: ${{ vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '4' || '' }}
       DSH_GATE_CONCURRENCY: ${{ vars.DSH_CI_FAILOVER_WINDOWS == 'selfhosted' && github.event.pull_request.user.login != 'dependabot[bot]' && '3' || '' }}
-      DSH_COVERAGE_TEST_TIMEOUT_MS: '90000'
+      # Repository-copy fixtures share the standard VM's CPU and disk with coverage workers.
+      DSH_COVERAGE_TEST_TIMEOUT_MS: ${{ vars.DSH_CI_FAILOVER_WINDOWS == 'github-hosted' && '240000' || '90000' }}
       # A gate failure aborts the sibling gate instead of waiting out its
       # multi-minute instrumented run.
       DSH_GATE_FAIL_FAST: '1'
@@ -288,11 +289,12 @@ jobs:
   # ci.yml's "all checks passed": every blocking job in THIS workflow is
   # listed in `needs`. windows-coverage stays outside the verdict, so its
   # per-file result remains visible without blocking. The bookkeeping job
-  # follows the Linux failover switch like the CI verdict.
+  # follows the Linux failover switch unless Windows uses standard hosted VMs.
   windows-checks-passed:
     name: windows checks passed
     runs-on: >-
-      ${{ vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404'
+      ${{ vars.DSH_CI_FAILOVER_WINDOWS == 'github-hosted' && 'ubuntu-latest'
+          || vars.DSH_CI_FAILOVER_LINUX == 'blacksmith' && 'blacksmith-4vcpu-ubuntu-2404'
           || vars.DSH_CI_FAILOVER_LINUX == 'selfhosted'
           && github.event.pull_request.user.login != 'dependabot[bot]'
           && fromJSON('["self-hosted", "linux", "x64", "vm-backup"]')
