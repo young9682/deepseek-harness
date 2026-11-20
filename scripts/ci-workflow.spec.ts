@@ -416,8 +416,13 @@ describe('CI workflow', () => {
       const cores = jobName === 'windows-native-tests' ? 2 : 16
       expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_WINDOWS: 'blacksmith' } }))
         .toBe(`blacksmith-${cores}vcpu-windows-2025`)
+      expect(evaluateRunsOn(job['runs-on'], { vars: { DSH_CI_FAILOVER_WINDOWS: 'github-hosted' } }))
+        .toBe('windows-2025')
       expect(job.if).toBe("github.event_name == 'pull_request'")
     }
+    const windowsPublisher = workflowJob(windowsWorkflow, 'windows-publisher')
+    expect(evaluateRunsOn(windowsPublisher['runs-on'], { vars: { DSH_CI_FAILOVER_WINDOWS: 'github-hosted' } }))
+      .toBe('windows-2025')
 
     // windows-build runs the blocking build/site pair.
     expect(windowsBuild.name).toBe('windows node 24 / build & observational')
