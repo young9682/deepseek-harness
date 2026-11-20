@@ -45,6 +45,41 @@ function baselines(accept: MockInstance): number {
 }
 
 describe('Session Controller Client apply', () => {
+  for (const stage of ['before baseline', 'without a draft observer'] as const) {
+    it(`reports no empty Sessions ${stage}`, async ({ mock, start }) => {
+      const accepted = vi.spyOn(ClientSessions.prototype, 'handleControlFrame')
+      if (stage === 'before baseline') mock.stream(CONTROL, () => {})
+      const reply = Promise.withResolvers<unknown>()
+      mock.stream(DRAFT_CHECK, async (_args, stream) => {
+        const first = await stream.uplink[Symbol.asyncIterator]().next()
+        if (!first.done) reply.resolve(first.value)
+      })
+      const { client } = await bench(start)
+      if (stage === 'before baseline') {
+        client.ctx.on('client-session/check-unused-blanks', ids => ({ sessionIds: ids, resume: () => {} }))
+        await mock.streams.opened(CONTROL, 1)
+        expect(baselines(accepted)).toBe(0)
+      } else {
+        await vi.waitFor(() => { expect(baselines(accepted)).toBe(1) })
+      }
+      await mock.streams.opened(DRAFT_CHECK, 1)
+      mock.streams.push(DRAFT_CHECK, [sid('unconfirmed')])
+      await expect(reply.promise).resolves.toEqual([])
+    }, COLD_BOOT_TIMEOUT_MS)
+  }
+
+  it('keeps the Client working when the optional draft probe is unavailable', async ({ mock, start }) => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    const { sessions } = await bench(start)
+    await mock.streams.opened(DRAFT_CHECK, 1)
+    const failure = new RemoteStreamCarrierError('Draft probe is unavailable')
+    mock.streams.fail(DRAFT_CHECK, failure)
+    await vi.waitFor(() => {
+      expect(debug).toHaveBeenCalledWith('[session-controller] shutdown draft check unavailable:', expect.any(Error))
+      expect(sessions.list.getSnapshot().phase).toBe('ready')
+    })
+  })
+
   it('returns the browser draft assessment and restores input after a fresh control baseline', async ({ mock, start }) => {
     const accept = vi.spyOn(ClientSessions.prototype, 'handleControlFrame')
     const reply = Promise.withResolvers<unknown>()
@@ -61,6 +96,9 @@ describe('Session Controller Client apply', () => {
     })
     await mock.streams.opened(DRAFT_CHECK, 1)
     await vi.waitFor(() => { expect(baselines(accept)).toBe(1) })
+    const projection = { type: 'projection', sessionId: id, seq: 0, changes: [] }
+    mock.streams.push(CONTROL, projection)
+    await vi.waitFor(() => { expect(accept).toHaveBeenCalledWith(projection) })
     mock.streams.push(DRAFT_CHECK, [id])
     await expect(reply.promise).resolves.toEqual([id])
     expect(resume).not.toHaveBeenCalled()

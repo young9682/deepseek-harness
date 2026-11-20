@@ -81,7 +81,10 @@ export class SessionControlController {
     if (!this.shuttingDown && this.owner?.peer === peer && !this.owner.signal.aborted) this.newBlanks.add(sessionId)
   }
 
-  /** @param sessionId - identity that acquired durable activity or was removed. */
+  /**
+   * Remove a Session from shutdown cleanup consideration.
+   * @param sessionId - identity that acquired durable activity or was removed.
+   */
   forgetBlank(sessionId: SessionId): void {
     this.newBlanks.delete(sessionId)
   }
@@ -96,6 +99,7 @@ export class SessionControlController {
   }
 
   /**
+   * Recheck candidate eligibility while shutdown cleanup is in progress.
    * @param sessionId - candidate to validate before destructive work.
    * @returns whether the original browser and candidate still qualify.
    */
@@ -120,7 +124,7 @@ export class SessionControlController {
     this.probe = { peer, signal, request }
     const cancelled = Promise.withResolvers<undefined>()
     const cancel = (): void => {
-      if (this.probe?.signal === signal) this.probe = undefined
+      this.probe = undefined
       cancelled.resolve(undefined)
     }
     signal.addEventListener('abort', cancel, { once: true })

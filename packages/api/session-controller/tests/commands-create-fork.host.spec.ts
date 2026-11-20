@@ -96,12 +96,20 @@ describe('Session creation failures', () => {
     await missing.fiber.dispose()
 
     const failed = await baseContext()
-    const workspace = {
+    const workspace: Workspace = {
       id: 'workspace-1' as WorkspaceId,
       path: '/workspace',
+      title: 'Workspace',
+      createdAt: new Date(0).toISOString(),
+      updatedAt: new Date(0).toISOString(),
       sessionIds: [],
+      getSessionHeaders: () => [],
+      setTitle: async () => {},
       attachSession: () => Promise.reject(new Error('read-only workspace')),
-    } as unknown as Workspace
+      insertSessionBefore: async () => {},
+      detachSession: async () => {},
+      status: async () => 'ok',
+    }
     failed.provide('workspaceRegistry', {
       get: () => workspace,
       list: () => [workspace],

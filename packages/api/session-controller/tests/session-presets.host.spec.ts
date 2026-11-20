@@ -2,15 +2,16 @@
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, sep } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import LocalFileSystem from '@deepseek-ai/dsh-fs-local'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
 import type { Agent, AgentFactory } from '@deepseek-ai/dsh-agent'
 import { agentPresetProjectionDefinition } from '@deepseek-ai/dsh-agent-preset-registry'
-import SessionStore, { SESSION_FORMAT_VERSION, type SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
+import SessionStore, { SESSION_FORMAT_VERSION, SessionLogOffset, type SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session, SessionEvent, SessionHeader } from '@deepseek-ai/dsh-session'
+import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -48,6 +49,7 @@ interface HarnessOptions {
   readonly unreadable?: ReadonlySet<SessionId>
   /** Events a resume finds beyond the stored log, as when another Host wrote after the observation. */
   readonly writtenSinceObservation?: ReadonlyMap<SessionId, readonly SessionEvent[]>
+  readonly duringResume?: (sessionId: SessionId) => void
   /** Live Sessions whose preset switch the roster refuses as already started. */
   readonly locked?: ReadonlySet<SessionId>
   /** Declared presets whose activation failed. */
@@ -166,6 +168,7 @@ async function harness(options: HarnessOptions = {}) {
         throw Object.assign(new Error(`session "${id}" is written by this process`), { name: 'SessionAlreadyOwnedError' })
       }
       resumed.push(id)
+      options.duringResume?.(id)
       const session = ctx.sessions.prepare(id, {
         meta: record.header,
         seed: [...record.events, ...options.writtenSinceObservation?.get(id) ?? []],
@@ -188,7 +191,7 @@ async function harness(options: HarnessOptions = {}) {
       .filter(event => event.type === 'agent-preset/selected')
       .map(event => event.data)
   }
-  return { ctx, remote, cwd, selections, resumed, presetOf, selectedEvents }
+  return { ctx, remote, cwd, selections, resumed, presetOf, selectedEvents, sessionIds }
 }
 
 function storedHeader(id: SessionId, cwd: string, extra: Partial<SessionHeader> = {}): SessionHeader {
@@ -211,6 +214,17 @@ function completedTurn(seq: number): SessionEvent[] {
 }
 
 describe('session.create Agent preset identity', () => {
+  it('reuses a Session reached through the filesystem canonical directory', async () => {
+    const { ctx, remote, cwd } = await harness()
+    await ctx.plugin(LocalFileSystem, { cwd })
+    const id = brandString<SessionId>('canonical-relative-spelling')
+    await expect(remote.create({ sessionId: id, cwd: `${cwd}${sep}.` }))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: id } })
+    expect(ctx.sessions.get(id)?.header.cwd).toBe(realpathSync.native(cwd))
+    await expect(remote.create({ sessionId: id, cwd }))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: id } })
+  })
+
   it('records the canonical spelling of the requested project directory', async () => {
     const { ctx, remote, cwd } = await harness({ presets: ['standard'] })
     await ctx.plugin(LocalFileSystem, { cwd })
@@ -693,6 +707,63 @@ describe('session.create reuse of a stored blank Session', () => {
 })
 
 describe('session.create Workspace placement', () => {
+  it('skips incompatible live and stored members before reusing an eligible blank', async () => {
+    const valid = brandString<SessionId>('valid-workspace-blank')
+    const ids = ['live-wrong-preset', 'live-wrong-directory', 'live-subagent', 'live-started',
+      'cold-subagent', 'cold-wrong-directory', 'cold-cache-started', 'vanished-after-stat', 'missing']
+      .map(id => brandString<SessionId>(id))
+    const [preset, wrong, child, started, coldChild, coldWrong, cached, vanished] = ids
+    if (preset === undefined || wrong === undefined || child === undefined || started === undefined
+      || coldChild === undefined || coldWrong === undefined || cached === undefined || vanished === undefined) {
+      throw new Error('Missing the Workspace candidate fixtures')
+    }
+    const stored = new Map<SessionId, StoredSession>()
+    const { remote, ctx, cwd, resumed } = await harness({
+      presets: ['standard', 'minimal'], stored, workspace: { members: [valid, ...ids], archived: [] },
+    })
+    await remote.create({ sessionId: valid })
+    await remote.create({ sessionId: preset, agentPreset: 'minimal' })
+    await remote.create({ sessionId: wrong, cwd: join(cwd, 'wrong') })
+    await remote.create({ sessionId: started })
+    ctx.sessions.get(started)?.append('turn/start', { turn: 1 })
+    const parentSession = brandString<SessionId>('parent')
+    ctx.sessions.create(child, { meta: { cwd, origin: 'subagent', parentSession } })
+    stored.set(coldChild, { header: storedHeader(coldChild, cwd, { origin: 'subagent', parentSession }), events: [] })
+    stored.set(coldWrong, { header: storedHeader(coldWrong, join(cwd, 'wrong')), events: [] })
+    stored.set(cached, { header: storedHeader(cached, cwd), events: completedTurn(0) })
+    stored.set(vanished, { header: storedHeader(vanished, cwd), events: [] })
+    ctx.provide('sessionProjectionCache', {
+      cachedSnapshot: (header: SessionHeader) => header.id === cached
+        ? { values: { sessionListMetadata: { blank: false } } }
+        : undefined,
+      hydratePrepared: (session: Session, events: readonly SessionEvent[]) =>
+        ctx.sessionProjections.hydrate(session, {}, events, SessionLogOffset(0)),
+    } as never)
+    const observe = ctx.sessionQuery.observeSession.bind(ctx.sessionQuery)
+    const observed = vi.spyOn(ctx.sessionQuery, 'observeSession').mockImplementation((id, options) => id === vanished
+      ? Promise.reject(new SessionQueryError('Archived entry disappeared', 'SESSION_QUERY_SESSION_NOT_FOUND'))
+      : observe(id, options))
+    await expect(remote.create({ workspaceId: WORKSPACE, agentPreset: 'standard' }))
+      .resolves.toMatchObject({ ok: true, value: { sessionId: valid } })
+    expect(observed.mock.calls.map(([id]) => id)).toEqual([vanished, coldWrong, coldChild])
+    expect(resumed).toEqual([])
+  })
+
+  it.each(['placement', 'preset'] as const)('does not adopt a cold alternate when its %s changes before writer acquisition', async (change) => {
+    const id = brandString<SessionId>('changing-cold-blank')
+    const stored = new Map<SessionId, StoredSession>()
+    const { remote, cwd, sessionIds } = await harness({
+      presets: ['standard', 'minimal'], stored,
+      workspace: { members: [id], archived: [] },
+      duringResume: () => { if (change === 'placement') sessionIds.splice(0, 1) },
+      writtenSinceObservation: change === 'preset' ? new Map([[id, [presetSelection(0, 'minimal')]]]) : new Map(),
+    })
+    stored.set(id, { header: storedHeader(id, cwd, { agentPreset: 'standard' }), events: [] })
+    const result = await remote.create({ workspaceId: WORKSPACE, agentPreset: 'standard' })
+    expect(result).toMatchObject({ ok: true, value: { agentPreset: 'standard' } })
+    if (result.ok) expect(result.value.sessionId).not.toBe(id)
+  })
+
   it('reuses a workspace blank even when the browser supplies no Session ID', async () => {
     const { remote } = await harness({ presets: ['standard'] })
     const first = await remote.create({ workspaceId: WORKSPACE })

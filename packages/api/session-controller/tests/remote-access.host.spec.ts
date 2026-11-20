@@ -8,6 +8,9 @@
  */
 
 import { Context } from '@deepseek-ai/cordis'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AttachmentId } from '@deepseek-ai/dsh-attachment/types'
 import { brandString } from '@deepseek-ai/dsh-brand'
 import type { Agent } from '@deepseek-ai/dsh-agent'
@@ -16,6 +19,7 @@ import TypertGatewayService from '@deepseek-ai/dsh-api-gateway'
 import type { RemoteAccessBinding, RemoteAccessRole } from '@deepseek-ai/dsh-api-remote-access'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import * as JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import { remoteMethods, type PeerId, type PeerScope, type Principal, type RemoteInvocation } from '@deepseek-ai/dsh-typert-protocol'
 import TypertRegistry from '@deepseek-ai/dsh-typert-registry'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -54,9 +58,12 @@ const SEARCHES_SHARED: RemoteAccessBinding = {
 }
 
 const owned = new Set<Context>()
+const roots = new Set<string>()
 afterEach(async () => {
   await Promise.all([...owned].map(ctx => ctx.fiber.dispose()))
   owned.clear()
+  await Promise.all([...roots].map(root => rm(root, { recursive: true, force: true })))
+  roots.clear()
 })
 
 /**
@@ -75,34 +82,124 @@ function guestCall(ctx: Context, method: string, args: Readonly<Record<string, u
   return ctx.typertGateway.invoke({ peer, namespace: 'session', method, args })
 }
 
-async function harness(): Promise<{
+async function harness(shutdown?: { beforeDelete?: () => Promise<readonly []> }): Promise<{
   readonly ctx: Context
   readonly controller: SessionController
   readonly shared: Agent
   readonly hidden: Agent
   /** The Context a Gateway dispatch of `session/<method>` binds for `principal`. */
-  readonly as: (principal: Principal, method: string) => Context
+  readonly as: (principal: Principal, method: string, uplink?: RemoteInvocation['uplink']) => Context
 }> {
   const ctx = new Context()
   owned.add(ctx)
   await ctx.plugin(TypertRegistry)
   await mountAgentLoopTestDependencies(ctx)
+  const cwd = shutdown !== undefined ? await mkdtemp(join(tmpdir(), 'dsh-shutdown-remote-')) : '/tmp'
+  if (shutdown !== undefined) {
+    roots.add(cwd)
+    await ctx.plugin(JsonlSessionPersistence, { root: join(cwd, 'sessions') })
+    ctx.provide('workspaceRegistry', {
+      isArchived: () => false, sessionActivity: shutdown.beforeDelete ?? (async () => []), forgetSession: async () => {},
+    } as never)
+  }
   const loop = await mountAgentLoopTestHarness(ctx)
   const shared = await loop.create(SHARED, {}, { cwd: '/tmp' })
   const hidden = await loop.create(PRIVATE, {}, { cwd: '/tmp' })
-  const controller = await createSessionTestController(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd: '/tmp' })
-  const as = (principal: Principal, method: string): Context => {
+  const controller = await createSessionTestController(ctx, { defaultModelSelection: () => ({ provider: 'p', model: 'm' }), cwd })
+  const as = (principal: Principal, method: string, uplink?: RemoteInvocation['uplink']): Context => {
     const invocation: RemoteInvocation = {
       request: { namespace: 'session', method, args: {} },
       service: 'sessionController',
       peer: { id: 'session-access-peer' as PeerId, ctx, principal, interactions: 'answer', signal: new AbortController().signal, dispose: async () => {} },
       signal: new AbortController().signal,
-      uplink: <In>(): AsyncIterable<In> => ({ [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }) }),
+      uplink: uplink ?? (<In>(): AsyncIterable<In> => ({
+        [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }),
+      })),
     }
     return ctx.extend({ invocation })
   }
   return { ctx, controller, shared, hidden, as }
 }
+
+describe('Session Controller shutdown', () => {
+  it('does not treat a subagent follow request as an ordinary workspace Session', async () => {
+    const { controller } = await harness()
+    const abort = new AbortController()
+    const follow = controller.follow({
+      address: { kind: 'subagent', parentSessionId: SHARED, childSessionId: PRIVATE, mode: 'unknown' },
+    }, abort.signal)[Symbol.asyncIterator]()
+    try {
+      await expect(follow.next()).rejects.toMatchObject({ code: 'subagent/unauthorized' })
+    } finally {
+      abort.abort()
+      await follow.return?.()
+    }
+  })
+
+  it('ignores callers without an owner invocation and skips unsupported storage', async () => {
+    const { ctx, controller, as } = await harness()
+    const signal = new AbortController().signal
+    const receive = (service: SessionController) => service.observeUnusedBlanks(signal)[Symbol.asyncIterator]().next()
+    await expect(receive(controller)).resolves.toMatchObject({ done: true })
+    await expect(receive(as(GUEST, 'observeUnusedBlanks').sessionController)).resolves.toMatchObject({ done: true })
+    const cancelled = AbortSignal.abort()
+    const owner = as(OWNER, 'observeUnusedBlanks').sessionController
+    await expect(owner.observeUnusedBlanks(cancelled)[Symbol.asyncIterator]().next()).resolves.toMatchObject({ done: true })
+    ctx.provide('sessionPersistence', { supportsDeletion: false } as never)
+    await ctx.parallel('app/before-shutdown', signal)
+  })
+
+  it.each(['complete', 'delete failure', 'deadline'] as const)('keeps unconfirmed logs when cleanup ends by %s', async (ending) => {
+    const beforeDelete = vi.fn(async (): Promise<readonly []> => [])
+    if (ending === 'delete failure') beforeDelete.mockRejectedValueOnce(new Error('fixture activity lookup failure'))
+    const { ctx, as } = await harness({ beforeDelete })
+    const browser = new AbortController()
+    const deadline = new AbortController()
+    let confirmed: readonly SessionId[] = []
+    async function* reply<In>(): AsyncIterable<In> {
+      // The probe is the only RPC bound to this typed fixture uplink.
+      yield confirmed as In
+    }
+    const service = as(OWNER, 'observeUnusedBlanks', reply).sessionController
+    const control = service.control(browser.signal)[Symbol.asyncIterator]()
+    const probe = service.observeUnusedBlanks(browser.signal)[Symbol.asyncIterator]()
+    try {
+      await control.next()
+      const first = await service.create({})
+      const second = await service.create({})
+      const draft = await service.create({})
+      const started = await service.create({})
+      ctx.sessions.get(started.sessionId)?.append('turn/start', { turn: 1 })
+      await ctx.sessionPersistence.flush()
+      for (const id of [first.sessionId, second.sessionId, draft.sessionId, started.sessionId]) {
+        expect(await ctx.sessionPersistence.stat(id)).toBeDefined()
+      }
+      confirmed = [first.sessionId, second.sessionId]
+      const purge = ctx.sessionPersistence.delete.bind(ctx.sessionPersistence)
+      if (ending === 'deadline') {
+        vi.spyOn(ctx.sessionPersistence, 'delete').mockImplementationOnce(async (id) => {
+          await purge(id)
+          deadline.abort()
+        })
+      }
+      const request = probe.next()
+      const shutdown = ctx.parallel('app/before-shutdown', deadline.signal)
+      await expect(request).resolves.toMatchObject({ value: [...confirmed, draft.sessionId], done: false })
+      await expect(probe.next()).resolves.toMatchObject({ done: true })
+      await shutdown
+      const remains = async (id: SessionId): Promise<boolean> => await ctx.sessionPersistence.stat(id) !== undefined
+      expect(await remains(first.sessionId)).toBe(ending === 'delete failure')
+      expect(await remains(second.sessionId)).toBe(ending === 'deadline')
+      expect(await remains(draft.sessionId)).toBe(true)
+      expect(await remains(started.sessionId)).toBe(true)
+    } finally {
+      browser.abort()
+      deadline.abort()
+      await probe.return?.()
+      await control.return?.()
+    }
+  })
+})
 
 function message(text: string) {
   return createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'user' } })

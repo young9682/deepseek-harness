@@ -105,6 +105,21 @@ describe('shutdown draft checks', () => {
     }
   })
 
+  it('does not record blanks created after the owner stream was aborted', async () => {
+    const { ctx, control } = await harness()
+    const browser = new AbortController()
+    const peer = owner(ctx, browser.signal)
+    const stream = control.control(browser.signal, peer)[Symbol.asyncIterator]()
+    await stream.next()
+    browser.abort()
+    try {
+      control.rememberBlank(id, peer)
+      expect(control.canClean(id)).toBe(false)
+    } finally {
+      await stream.return?.()
+    }
+  })
+
   it('keeps blanks after an additional owner stream even when that stream closes', async () => {
     const { ctx, control } = await harness()
     const browser = new AbortController()
@@ -122,6 +137,52 @@ describe('shutdown draft checks', () => {
       browser.abort()
       otherBrowser.abort()
       await second.return?.()
+      await stream.return?.()
+    }
+  })
+
+  it('rejects late probes and repeated shutdown attempts after an expired deadline', async () => {
+    const { ctx, control } = await harness()
+    const browser = new AbortController()
+    const deadline = new AbortController()
+    const peer = owner(ctx, browser.signal)
+    const stream = control.control(browser.signal, peer)[Symbol.asyncIterator]()
+    try {
+      await stream.next()
+      control.rememberBlank(id, peer)
+      const queued = control.awaitBlankCheck(peer, browser.signal)
+      deadline.abort()
+      await expect(control.checkUnusedBlanks(deadline.signal)).resolves.toEqual([])
+      await expect(control.checkUnusedBlanks(browser.signal)).resolves.toEqual([])
+      await expect(control.awaitBlankCheck(peer, browser.signal)).resolves.toBeUndefined()
+      browser.abort()
+      await expect(queued).resolves.toBeUndefined()
+    } finally {
+      browser.abort()
+      await stream.return?.()
+    }
+  })
+
+  it('cancels an idle probe and rejects duplicate probes from the same browser', async () => {
+    const { ctx, control } = await harness()
+    const browser = new AbortController()
+    const closedProbe = new AbortController()
+    const peer = owner(ctx, browser.signal)
+    const stream = control.control(browser.signal, peer)[Symbol.asyncIterator]()
+    try {
+      await stream.next()
+      control.rememberBlank(id, peer)
+      const cancelled = control.awaitBlankCheck(peer, closedProbe.signal)
+      closedProbe.abort()
+      await expect(cancelled).resolves.toBeUndefined()
+      await expect(control.awaitBlankCheck(peer, closedProbe.signal)).resolves.toBeUndefined()
+      const pending = control.awaitBlankCheck(peer, browser.signal)
+      await expect(control.awaitBlankCheck(peer, AbortSignal.timeout(1_000))).resolves.toBeUndefined()
+      await expect(control.checkUnusedBlanks(AbortSignal.timeout(1_000))).resolves.toEqual([])
+      browser.abort()
+      await expect(pending).resolves.toBeUndefined()
+    } finally {
+      browser.abort()
       await stream.return?.()
     }
   })

@@ -10,7 +10,7 @@
 import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import SessionStore, { SessionId } from '@deepseek-ai/dsh-session'
+import SessionStore, { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { SessionActivity } from '@deepseek-ai/dsh-workspace'
 import { describe, expect, it, vi } from 'vitest'
@@ -122,6 +122,60 @@ function liveSession(b: DeleteHarness, id: string): Session {
 }
 
 describe('unused blank shutdown cleanup', () => {
+  it('does not delete missing, seeded, unconfirmed, or previously started Sessions', async () => {
+    const b = await harness()
+    try {
+      const blank = liveSession(b, 'unconfirmed')
+      const seeded = b.ctx.sessions.fork(blank)
+      const started = liveSession(b, 'started')
+      started.append('turn/start', { turn: 1 })
+      await b.controller.deleteUnusedBlank(sid('missing'), () => true)
+      await b.controller.deleteUnusedBlank(seeded.id, () => true)
+      await b.controller.deleteUnusedBlank(blank.id, () => false)
+      await b.controller.deleteUnusedBlank(started.id, () => true)
+      expect(b.disposeLive).not.toHaveBeenCalled()
+      expect(b.persistenceDelete).not.toHaveBeenCalled()
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+
+  it.each(['prepared', 'mismatched cursor', 'different attachment'] as const)('keeps a blank with a %s observation', async (kind) => {
+    const b = await harness()
+    try {
+      const blank = liveSession(b, 'observation-changed')
+      const observation = await b.ctx.sessionQuery.observeSession(blank.id, { projectionMode: 'none' })
+      vi.spyOn(b.ctx.sessionQuery, 'observeSession').mockResolvedValueOnce({
+        ...observation,
+        source: kind === 'prepared' ? 'prepared' : 'live',
+        cursor: kind === 'mismatched cursor' ? SessionSeq(0) : observation.cursor,
+        [Symbol.dispose]: () => { observation[Symbol.dispose]() },
+      })
+      if (kind === 'different attachment') {
+        vi.spyOn(b.ctx.sessions, 'get').mockReturnValueOnce(blank).mockReturnValueOnce(undefined)
+      }
+      await b.controller.deleteUnusedBlank(blank.id, () => true)
+      expect(b.disposeLive).not.toHaveBeenCalled()
+      expect(b.persistenceDelete).not.toHaveBeenCalled()
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+
+  it('keeps a blank when the browser loses eligibility while the log is observed', async () => {
+    const b = await harness()
+    try {
+      const blank = liveSession(b, 'eligibility-lost')
+      const eligible = vi.fn(() => false).mockReturnValueOnce(true)
+      await b.controller.deleteUnusedBlank(blank.id, eligible)
+      expect(eligible).toHaveBeenCalledTimes(2)
+      expect(b.disposeLive).not.toHaveBeenCalled()
+      expect(b.persistenceDelete).not.toHaveBeenCalled()
+    } finally {
+      await b.ctx.fiber.dispose()
+    }
+  })
+
   it('deletes an untouched Session through normal teardown', async () => {
     const b = await harness()
     try {

@@ -166,14 +166,15 @@ export function apply(ctx: Context): void {
     try {
       const probe = remotes.session.observeUnusedBlanks(signal)
       for await (const ids of probe) {
-        if (signal.aborted) break
+        signal.throwIfAborted()
         const report = controlReady ? ctx.bail('client-session/check-unused-blanks', ids) : undefined
         resumeDraftInput = report?.resume
         probe.send(report?.sessionIds ?? [])
         probe.end()
       }
-    } catch (_error: unknown) {
-      // An old Host or a lost connection keeps unknown drafts unconfirmed.
+    } catch (error: unknown) {
+      // Missing or failed probes leave the draft unconfirmed.
+      console.debug('[session-controller] shutdown draft check unavailable:', error)
     }
   }
   const connected = (): void => {
