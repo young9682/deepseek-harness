@@ -186,12 +186,14 @@ describe('Node program process', () => {
   it('retains inspected output when a non-yielding program is canceled', async () => {
     const { run, cwd } = await setup()
     const controller = new AbortController()
+    const entered = Promise.withResolvers<undefined>()
     const pending = run({
       program: 'const fs = await import("node:fs"); inspect("before hot loop"); await tools.enter({}); fs.writeFileSync("entered-loop", "ready"); for (;;) {}',
       signal: controller.signal, timeoutMs: null,
-      bindings: bindings({ enter: async () => null }),
+      bindings: bindings({ enter: async () => { entered.resolve(undefined); return null } }),
     })
     try {
+      expect(await Promise.race([entered.promise, pending])).toBeUndefined()
       await expect.poll(async () => readFile(join(cwd, 'entered-loop'), 'utf8')).toBe('ready')
       controller.abort('stop')
       const result = await pending
@@ -210,8 +212,9 @@ describe('Node program process', () => {
     const { run } = await setup()
     const entered = Promise.withResolvers<undefined>()
     const controller = new AbortController()
-    const active = run({ ...timing, program: 'void tools.enter({}); for (;;) {}', signal: controller.signal, bindings: bindings({ enter: async () => { entered.resolve(undefined); return null } }) })
-    await entered.promise
+    // Let the readiness call reach the parent before the child blocks its event loop.
+    const active = run({ ...timing, program: 'await tools.enter({}); for (;;) {}', signal: controller.signal, bindings: bindings({ enter: async () => { entered.resolve(undefined); return null } }) })
+    await Promise.race([entered.promise, active])
     controller.abort('stop')
     expect((await active).error).toEqual({ kind: 'abort', message: 'stop' })
   })
