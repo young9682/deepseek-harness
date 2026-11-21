@@ -148,6 +148,19 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     icacls(path, `/${type}`, `*${sid}:(RX)`)
   }
 
+  function allowRepairWithoutWriteOwner(path: string): void {
+    // A hosted runner can own the directory through Administrators and already
+    // have explicit FullControl ACEs. Set the complete fixture DACL.
+    pwsh(`
+$ErrorActionPreference = 'Stop'
+$acl = [System.Security.AccessControl.DirectorySecurity]::new()
+$acl.SetAccessRuleProtection($true, $false)
+$sid = [System.Security.Principal.SecurityIdentifier]::new('${meSid}')
+$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, 'Modify, ChangePermissions', 'Allow'))
+Set-Acl -LiteralPath ${quote(path)} -AclObject $acl
+`)
+  }
+
   function dispose(root: string): void {
     // Restore the rights a grant case withheld before deleting the scratch tree.
     pwsh(
@@ -248,7 +261,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
       icacls(target, '/setintegritylevel', 'L')
       const labelsBefore = integrityLines(target)
       expect(labelsBefore.length).toBeGreaterThan(0)
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(target)
       const ownerBefore = ownerOf(target)
 
       const run = runScript(['-Path', target, '-AllowRoot', scratch, '-Out', join(scratch, 'out')])
@@ -272,7 +285,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'both')
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(target)
       stamp(target, PACKAGE_SID)
       const ownerBefore = ownerOf(target)
 
@@ -341,11 +354,13 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
       // The sandbox reports its provisioning failure on the workspace root while the
       // conflicting entry sits deeper, so one approved call must clear both.
       const root = makeDir(scratch, 'workspace')
-      icacls(root, '/inheritance:r', '/grant:r', '*S-1-5-11:(M)')
       const deep = makeDir(root, 'deep')
       const leaf = makeDir(deep, 'leaf')
-      icacls(deep, '/inheritance:r', '/grant:r', `*${PACKAGE_SID}:(OI)(CI)(RX)`)
-      icacls(leaf, '/inheritance:r', '/grant:r', `*${OTHER_PACKAGE_SID}:(OI)(CI)(RX)`)
+      // Each scanned source remains readable and repairable after the root
+      // stops passing down the temporary directory's ACL.
+      icacls(leaf, '/inheritance:r', '/grant:r', `*${meSid}:(F)`, `*${OTHER_PACKAGE_SID}:(OI)(CI)(RX)`)
+      icacls(deep, '/inheritance:r', '/grant:r', `*${meSid}:(F)`, `*${PACKAGE_SID}:(OI)(CI)(RX)`)
+      allowRepairWithoutWriteOwner(root)
 
       const run = runScript(['-Path', root, '-AllowRoot', root, '-Out', join(scratch, 'out')])
       expect(run.code, run.output).toBe(0)
@@ -378,16 +393,16 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'inherit-only')
-      icacls(target, '/inheritance:r', '/grant:r', '*S-1-5-11:(M)')
+      allowRepairWithoutWriteOwner(target)
       icacls(target, '/grant', '*S-1-5-32-545:(OI)(CI)(IO)(F)')
-      const inheritOnlyBefore = aclLines(target).filter(line => line.includes('(IO)'))
+      const inheritOnlyBefore = normalized(target, aclLines(target)).filter(line => line.includes('(IO)'))
       expect(inheritOnlyBefore).toHaveLength(1)
 
       const run = runScript(['-Path', target, '-AllowRoot', scratch, '-Out', join(scratch, 'out')])
       expect(run.code, run.output).toBe(0)
       expect(run.output).toContain(`GRANTED ${target} SID=${meSid}`)
       expect(reports(run)).toContainEqual(containingObject({ kind: 'verification', operation: 'grant', path: target, status: 'verified' }))
-      expect(aclLines(target).filter(line => line.includes('(IO)'))).toEqual(inheritOnlyBefore)
+      expect(normalized(target, aclLines(target)).filter(line => line.includes('(IO)'))).toEqual(inheritOnlyBefore)
       expect(aclLines(target).join('\n')).toMatch(/\(F\)/u)
     } finally {
       dispose(scratch)
@@ -566,7 +581,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     try {
       const out = join(scratch, 'out')
       const first = makeDir(scratch, 'multi-first')
-      icacls(first, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(first)
       const second = makeDir(scratch, 'multi-second')
       stamp(second, PACKAGE_SID)
       icacls(second, '/deny', `*${meSid}:(WO)`)
@@ -588,7 +603,7 @@ describe.skipIf(!isWin32 || !pwshAvailable())('diagnose-windows-sandbox-acl scri
     try {
       const out = join(scratch, 'out')
       const first = makeDir(scratch, 'pending-first')
-      icacls(first, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(first)
       const second = makeDir(scratch, 'pending-second')
       stamp(second, PACKAGE_SID)
       icacls(second, '/deny', `*${meSid}:(WO)`)
@@ -714,7 +729,7 @@ exit $LASTEXITCODE
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'backup-failure')
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(target)
       const outputFile = join(scratch, 'not-a-directory')
       writeFileSync(outputFile, 'Existing contents')
       const before = sddlOf(target)
@@ -806,7 +821,7 @@ function icacls { throw [System.IO.IOException]::new('icacls unavailable') }
     try {
       const out = join(scratch, 'out')
       const grantRoot = makeDir(scratch, 'self-grant')
-      icacls(grantRoot, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(grantRoot)
       const grantRun = runScript(['-Path', grantRoot, '-AllowRoot', grantRoot, '-Out', out])
       expect(grantRun.code, grantRun.output).toBe(0)
       expect(grantRun.output).toContain(`GRANTED ${grantRoot} SID=${meSid}`)
@@ -827,7 +842,7 @@ function icacls { throw [System.IO.IOException]::new('icacls unavailable') }
     const scratch = newScratch()
     try {
       const target = makeDir(scratch, 'idempotent')
-      icacls(target, '/inheritance:r', '/grant:r', `*${meSid}:(M)`)
+      allowRepairWithoutWriteOwner(target)
       stamp(target, PACKAGE_SID)
       const out = join(scratch, 'out')
 

@@ -2228,6 +2228,26 @@ describe('JsonlSessionPersistence: deletion', () => {
     await expect(stat(dir)).rejects.toThrow()
   })
 
+  it('keeps the session directory until its closing writer finishes draining', async () => {
+    const m = meta('deletion-during-close', '/work')
+    const handle = await ctx.sessionPersistence.create(m) as JsonlSessionHandle
+    await handle.flush()
+    const dir = sessionDir(root, m.cwd, m.id)
+    const drain = Promise.withResolvers<undefined>()
+    vi.spyOn(handle, 'drainLive').mockReturnValueOnce(drain.promise)
+    const waiting = vi.spyOn(handle, 'awaitClosed')
+    const closing = handle.close()
+    const deleting = ctx.sessionPersistence.delete(m.id)
+    try {
+      await vi.waitFor(() => { expect(waiting).toHaveBeenCalledOnce() })
+      expect((await stat(dir)).isDirectory()).toBe(true)
+    } finally {
+      drain.resolve(undefined)
+      await Promise.all([closing, deleting])
+    }
+    await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('delete of a never-existed or already-removed id resolves without touching a sibling', async () => {
     const kept = await store('bystander')
     await expect(ctx.sessionPersistence.delete(SessionId('phantom'))).resolves.toBeUndefined()

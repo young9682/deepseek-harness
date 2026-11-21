@@ -5,7 +5,7 @@
  * production confined execution walks.
  */
 
-import { spawnSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -538,6 +538,9 @@ describe.skipIf(!isWin32 || !pwshAvailable())('windows-acl runner', () => {
     mkdirSync(child)
     writeFileSync(join(granted, 'file.txt'), 'x')
     writeFileSync(join(child, 'deep.txt'), 'x')
+    // Exercise inheritance from the grant even when TEMP supplies explicit
+    // grants to the runner account on newly created descendants.
+    execFileSync('icacls', [join(granted, '*'), '/reset', '/T'], { windowsHide: true })
     const grant = AclWriteGrant.create(workspaceWriteSid(granted))
     grant.add(granted, true)
     try {
@@ -551,17 +554,18 @@ public static extern bool CloseHandle(IntPtr h);
 '@ | Out-Null
 function TryOpen([string]$label, [string]$path) {
   $h = [P.F]::CreateFileW($path, 0x10000000, 7, [IntPtr]::Zero, 3, 0x02000000, [IntPtr]::Zero)
-  if ($h -eq [IntPtr]::new(-1)) { "$($label): DENIED" } else { [void][P.F]::CloseHandle($h); "$($label): OK" }
+  if ($h -eq [IntPtr]::new(-1)) { "$($label): WIN32=$([Runtime.InteropServices.Marshal]::GetLastWin32Error())" } else { [void][P.F]::CloseHandle($h); "$($label): OK" }
 }
 TryOpen 'FILE' '${join(granted, 'file.txt')}'
 TryOpen 'NESTED-FILE' '${join(child, 'deep.txt')}'
 TryOpen 'DIRECTORY' '${child}'
+(Get-Acl -LiteralPath '${child}').Sddl
 `
       const result = spawnSync('pwsh', ['-NoLogo', '-NonInteractive', '-NoProfile', '-Command', probe], { encoding: 'utf8', timeout: 60_000 })
       expect(result.status, `stderr: ${result.stderr}`).toBe(0)
       expect(result.stdout).toContain('FILE: OK')
       expect(result.stdout).toContain('NESTED-FILE: OK')
-      expect(result.stdout).toContain('DIRECTORY: DENIED')
+      expect(result.stdout).toContain('DIRECTORY: WIN32=5')
     } finally {
       grant.dispose()
       rmSync(granted, { recursive: true, force: true })
