@@ -52,7 +52,7 @@ PR opening initializes an empty Project `Start Date` for every referenced Issue,
 <a id="configuration-and-limitations"></a>
 ## Configuration and limitations
 
-[config.json](config.json) selects the repository, Project, field names, statuses, lifecycle actor, and time zone. The policy reads the Project custom single-select `Priority` field, not a native organization Issue Priority field. Project-local planning fields need no separate organization Issue Fields permission. Maintainers set Project Priority manually; skill guidance that directs edits to native Issue fields does not populate this value. Issue audits remove PR-only kinds and retired label aliases before validating the remaining metadata. There is no field migration or Priority synchronization.
+GitHub Actions uses `GITHUB_REPOSITORY` for PRs, Issues, and the owner of the Project. Local runs without that variable use the owner and repository in [config.json](config.json). The same file selects the Project number and title, field names, statuses, lifecycle actor, and time zone. The policy reads the Project custom single-select `Priority` field, not a native organization Issue Priority field. Project-local planning fields need no separate organization Issue Fields permission. Maintainers set Project Priority manually; skill guidance that directs edits to native Issue fields does not populate this value. Issue audits remove PR-only kinds and retired label aliases before validating the remaining metadata. There is no field migration or Priority synchronization.
 
 Before removing a legacy organization field, compare every value with its Project value, including archived Project items.
 

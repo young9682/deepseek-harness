@@ -6,6 +6,11 @@ import config from './config.json' with { type: 'json' }
 
 const API_VERSION = '2026-03-10'
 
+/** Return the repository running the workflow, or the configured repository for local runs. */
+export function policyRepository() {
+  return process.env.GITHUB_REPOSITORY ?? `${config.organization}/${config.repository}`
+}
+
 function token() {
   const value = process.env.GH_TOKEN || process.env.GITHUB_TOKEN
   if (!value) throw new Error('GH_TOKEN 或 GITHUB_TOKEN 未设置')
@@ -69,7 +74,7 @@ export async function graphql(query, variables) {
  * @returns {Promise<object|null>} Issue snapshot, or null when the number identifies a pull request.
  */
 export async function issueSnapshot(number, status = undefined) {
-  const issue = await api(`/repos/${config.organization}/${config.repository}/issues/${number}`)
+  const issue = await api(`/repos/${policyRepository()}/issues/${number}`)
   if (issue.pull_request) return null
   const context = await projectContext(number)
   return {
@@ -92,9 +97,10 @@ export async function issueSnapshot(number, status = undefined) {
  * @returns {Promise<object>} Project, Issue, fields, optional item, and status actor; never writes.
  */
 export async function projectContext(number, includeStatusActor = false, includeStartDate = false) {
+  const [owner, repository] = policyRepository().split('/')
   const data = await graphql(
     `query(
-      $organization: String!
+      $owner: String!
       $repository: String!
       $number: Int!
       $project: Int!
@@ -103,30 +109,32 @@ export async function projectContext(number, includeStatusActor = false, include
       $priorityField: String!
       $startDateField: String!
     ) {
-      organization(login: $organization) {
-        projectV2(number: $project) {
-          id
-          title
-          fields(first: 50) {
-            nodes {
-              ... on ProjectV2Field {
-                id
-                name
-                dataType
-                isIssueField
-              }
-              ... on ProjectV2SingleSelectField {
-                id
-                name
-                dataType
-                isIssueField
-                options { id name }
+      repositoryOwner(login: $owner) {
+        ... on ProjectV2Owner {
+          projectV2(number: $project) {
+            id
+            title
+            fields(first: 50) {
+              nodes {
+                ... on ProjectV2Field {
+                  id
+                  name
+                  dataType
+                  isIssueField
+                }
+                ... on ProjectV2SingleSelectField {
+                  id
+                  name
+                  dataType
+                  isIssueField
+                  options { id name }
+                }
               }
             }
           }
         }
       }
-      repository(owner: $organization, name: $repository) {
+      repository(owner: $owner, name: $repository) {
         issue(number: $number) {
           id
           timelineItems(last: 100, itemTypes: [PROJECT_V2_ITEM_STATUS_CHANGED_EVENT])
@@ -159,8 +167,8 @@ export async function projectContext(number, includeStatusActor = false, include
       }
     }`,
     {
-      organization: config.organization,
-      repository: config.repository,
+      owner,
+      repository,
       number,
       project: config.projectNumber,
       includeStatusActor,
@@ -169,7 +177,7 @@ export async function projectContext(number, includeStatusActor = false, include
       startDateField: config.startDateField,
     },
   )
-  const project = data.organization?.projectV2
+  const project = data.repositoryOwner?.projectV2
   const issue = data.repository?.issue
   if (!project || project.title !== config.projectTitle) throw new Error('目标 Project 不存在或标题不匹配')
   if (!issue) throw new Error(`#${number} 不存在`)
